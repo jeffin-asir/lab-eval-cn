@@ -5,6 +5,30 @@ import { authorize, requireAuth } from '../middleware/auth.js';
 const router = express.Router();
 router.use(requireAuth, authorize('faculty', 'admin'));
 
+const LEGACY_CONTAINER_PREFIX = 'lab_exam_';
+const LEGACY_VOLUME_PREFIX = 'lab_data_';
+const LAB_PREFIX = 'lab_';
+
+function isLabContainerName(name) {
+  return name.startsWith(LAB_PREFIX) || name.startsWith(LEGACY_CONTAINER_PREFIX);
+}
+
+function isLabVolumeName(name) {
+  return name.startsWith(LAB_PREFIX) || name.startsWith(LEGACY_VOLUME_PREFIX);
+}
+
+// New layout: container and volume share the same `lab_{userId}_{sessionId}` name.
+// Legacy layout: lab_exam_* containers paired with lab_data_* volumes.
+function volumeNameToContainerName(volumeName) {
+  if (volumeName.startsWith(LAB_PREFIX) && !volumeName.startsWith(LEGACY_CONTAINER_PREFIX)) {
+    return volumeName;
+  }
+  if (volumeName.startsWith(LEGACY_VOLUME_PREFIX)) {
+    return `${LEGACY_CONTAINER_PREFIX}${volumeName.slice(LEGACY_VOLUME_PREFIX.length)}`;
+  }
+  return null;
+}
+
 function formatContainer(container) {
   const names = (container.Names || []).map((name) => name.replace(/^\//, ''));
   return {
@@ -17,23 +41,14 @@ function formatContainer(container) {
     status: container.Status,
     created: container.Created ? new Date(container.Created * 1000).toISOString() : null,
     ports: container.Ports || [],
-    isLabContainer: names.some((name) => name.startsWith('lab_exam_')),
+    isLabContainer: names.some((name) => isLabContainerName(name)),
   };
-}
-
-// Volumes are named `lab_data_{userId}_{sessionId}` while their matching
-// container is named `lab_exam_{userId}_{sessionId}` (see dockerManager.js).
-// Used to tell whether a volume still has a container or was left behind
-// after that container was deleted from the Docker Manager tab.
-function volumeNameToContainerName(volumeName) {
-  if (!volumeName.startsWith('lab_data_')) return null;
-  return `lab_exam_${volumeName.slice('lab_data_'.length)}`;
 }
 
 function formatVolume(volume, usageByName, existingContainerNames) {
   const name = volume.Name;
   const usage = usageByName.get(name);
-  const isLabVolume = name.startsWith('lab_data_');
+  const isLabVolume = isLabVolumeName(name);
   const linkedContainer = isLabVolume ? volumeNameToContainerName(name) : null;
   const containerExists = linkedContainer ? existingContainerNames.has(linkedContainer) : null;
   const inUse = usage ? usage.RefCount > 0 : containerExists;
@@ -81,7 +96,7 @@ router.post('/prune-lab-containers', async (req, res) => {
     const containers = await docker.listContainers({ all: true });
     const stoppedLabContainers = containers.filter((container) => {
       const names = (container.Names || []).map((name) => name.replace(/^\//, ''));
-      return container.State !== 'running' && names.some((name) => name.startsWith('lab_exam_'));
+      return container.State !== 'running' && names.some((name) => isLabContainerName(name));
     });
 
     const removed = [];
@@ -108,9 +123,6 @@ router.get('/volumes', async (req, res) => {
       containers.flatMap((c) => (c.Names || []).map((name) => name.replace(/^\//, '')))
     );
 
-    // docker.df() gives real disk usage (Size) and how many containers
-    // reference each volume (RefCount); it's a heavier/newer engine call so
-    // fall back gracefully if it's unavailable rather than failing the tab.
     const usageByName = new Map();
     try {
       const df = await docker.df();
@@ -140,9 +152,6 @@ router.delete('/volumes/:name', async (req, res) => {
   }
 });
 
-// Deletes every lab_data_ volume whose matching lab_exam_ container no
-// longer exists — Docker never auto-removes a volume when its container is
-// deleted, so these silently pile up and eat disk until cleared here.
 router.post('/prune-orphaned-volumes', async (req, res) => {
   try {
     const [volumesResult, containers] = await Promise.all([

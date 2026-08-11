@@ -152,7 +152,7 @@ export default function TeacherDocker() {
   };
 
   const pruneLabContainers = async () => {
-    if (!confirm('Delete all stopped lab_exam containers? Running containers will be kept.')) return;
+    if (!confirm('Delete all stopped lab containers? Running containers will be kept.')) return;
 
     setContainersLoading(true);
     try {

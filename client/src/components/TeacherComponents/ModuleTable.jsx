@@ -18,7 +18,7 @@ const ModuleTable = ({
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Questions</th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Max Marks</th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Session</th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Time Window</th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
             {isLabSession && (
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Lab Actions</th>
@@ -38,7 +38,7 @@ const ModuleTable = ({
               </td>
               <td className="px-6 py-4 whitespace-nowrap">{m.maxMarks || '-'}</td>
               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                {m.targetBatch || 'All'} · {m.sessionSlot || '-'} · {m.durationMinutes || 60}m
+                {m.targetBatch || 'All'} · {m.startTime || '09:00'} – {m.endTime || '12:00'}
               </td>
               <td className="px-6 py-4 whitespace-nowrap">
                 <button

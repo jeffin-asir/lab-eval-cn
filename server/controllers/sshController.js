@@ -4,7 +4,7 @@ import fs from 'fs';
 import url from 'url';
 import dotenv from 'dotenv';
 import Session from '../models/Session.js';
-import { createContainerForUser, docker, normalizeSessionId } from '../docker/dockerManager.js';
+import { createContainerForUser, docker, normalizeSessionId, buildLabResourceName } from '../docker/dockerManager.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { Question } from '../models/Question.js';
@@ -18,7 +18,6 @@ import {
   parseStatusCsv,
   toApiResults,
 } from '../utils/evaluationHelper.js';
-import { getCurrentSlotKey } from '../utils/labSlot.js';
 import LabAssignment from '../models/LabAssignment.js';
 import User from '../models/User.js';
 import { getUserFromRequest } from '../middleware/auth.js';
@@ -453,7 +452,7 @@ export async function stopSessionContainer(userId, requestedSessionId) {
   if (!sessionId) throw new Error('sessionId is required');
 
   const session = await Session.findOne({ userId, sessionId });
-  const expectedContainerName = `lab_exam_${userId}_${sessionId}`;
+  const expectedContainerName = buildLabResourceName(userId, sessionId);
   const containerName = session?.containerName || expectedContainerName;
 
   for (const [socketKey, entry] of Object.entries(sessions)) {
@@ -937,7 +936,7 @@ export async function runAndEvaluate({
       stdout,
       stderr,
       exitCode,
-      slotKey: assignment?.slotKey || getCurrentSlotKey(),
+      slotKey: assignment?.slotKey || null,
     });
 
     console.log("M returning");

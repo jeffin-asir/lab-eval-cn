@@ -280,15 +280,43 @@ const WorkspaceLoading = ({ message = 'Preparing your lab workspace...' }) => (
 const getCurrentUser = () => window.__authUser?.user_id || '';
 const getStudentName = () => window.__authUser?.name || getCurrentUser();
 
-// Turns the backend's sessionSlot ("AN"/"FN") or slotKey
-// ("2026-07-13_AN") into the short session label shown in the header,
-// replacing the old raw "10:00 AM - 12:00 PM" time-of-day string.
-const getSessionLabel = (sessionSlot, slotKey) => {
-  const raw = sessionSlot || slotKey || '';
-  if (!raw) return 'Not specified';
-  const suffix = raw.includes('_') ? raw.split('_').pop() : raw;
-  return suffix.toUpperCase();
+// Formats the lab time window for the header from start/end times or slotKey.
+const getSessionLabel = (startTime, endTime, slotKey) => {
+  if (startTime && endTime) return `${startTime} – ${endTime}`;
+  if (slotKey) {
+    const parts = slotKey.split('_');
+    // moduleId_YYYY-MM-DD_HHMM_HHMM
+    if (parts.length >= 4 && /^\d{4}-\d{2}-\d{2}$/.test(parts[1])) {
+      return `${parts[2].slice(0, 2)}:${parts[2].slice(2)} – ${parts[3].slice(0, 2)}:${parts[3].slice(2)}`;
+    }
+    // legacy YYYY-MM-DD_HHMM_HHMM
+    if (parts.length === 3 && /^\d{4}-\d{2}-\d{2}$/.test(parts[0])) {
+      return `${parts[1].slice(0, 2)}:${parts[1].slice(2)} – ${parts[2].slice(0, 2)}:${parts[2].slice(2)}`;
+    }
+    if (parts.length === 2 && /^(FN|AN)$/i.test(parts[1])) return parts[1].toUpperCase();
+  }
+  return 'Not specified';
 };
+
+function parseAvailableAtOnDate(availableAt, moduleDate) {
+  if (!availableAt) return null;
+  const base = moduleDate ? new Date(moduleDate) : new Date();
+  const [h, m] = availableAt.split(':').map(Number);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+  const d = new Date(base);
+  d.setHours(h, m, 0, 0);
+  return d;
+}
+
+function isQuestionUnlocked(question, now = new Date()) {
+  if (question.isAvailable === false) return false;
+  if (question.availableAtDate) return new Date(question.availableAtDate) <= now;
+  if (question.availableAt) {
+    const unlockAt = parseAvailableAtOnDate(question.availableAt, question.moduleDate);
+    return !unlockAt || unlockAt <= now;
+  }
+  return true;
+}
 
 // Real-time module handling will be implemented with WebSockets
 
@@ -459,13 +487,18 @@ export default function CNLabWorkspace() {
             name: moduleData.name,
             description: moduleData.description,
             maxMarks: moduleData.maxMarks,
-            time: getSessionLabel(moduleData.assignment?.sessionSlot || moduleData.sessionSlot, moduleData.assignment?.slotKey),
+            time: getSessionLabel(
+              moduleData.assignment?.startTime || moduleData.startTime,
+              moduleData.assignment?.endTime || moduleData.endTime,
+              moduleData.assignment?.slotKey
+            ),
             date: moduleData.date,
-            durationMinutes: moduleData.assignment?.durationMinutes || moduleData.durationMinutes || 60,
+            startTime: moduleData.assignment?.startTime || moduleData.startTime || '',
+            endTime: moduleData.assignment?.endTime || moduleData.endTime || '',
             slotKey: moduleData.assignment?.slotKey || '',
+            startsAt: moduleData.assignment?.startsAt || null,
             endsAt: moduleData.assignment?.endsAt || null,
             targetBatch: moduleData.assignment?.targetBatch || moduleData.targetBatch || '',
-            sessionSlot: moduleData.assignment?.sessionSlot || moduleData.sessionSlot || ''
           });
 
           // Fetch questions for this module if not already included
@@ -488,6 +521,10 @@ export default function CNLabWorkspace() {
             input: q.input || '',
             evalScript: q.evalScript || '',
             maxMarks: q.maxMarks,
+            availableAt: q.availableAt || moduleData.startTime || '09:00',
+            availableAtDate: q.availableAtDate || null,
+            moduleDate: moduleData.date,
+            isAvailable: q.isAvailable !== false,
           }));
 
           setQuestions(formattedQuestions);
@@ -986,6 +1023,10 @@ export default function CNLabWorkspace() {
   // Handle execution
   const handleRun = () => {
     if (timeLocked) return;
+    if (activeQuestionLocked) {
+      alert(`This question is not available yet. It opens at ${questions[activeQuestionIdx]?.availableAt || 'the scheduled time'}.`);
+      return;
+    }
     setIsRunning(true);
     setShowTerminal(true);
     setActiveTab('terminal');
@@ -1138,6 +1179,8 @@ export default function CNLabWorkspace() {
           alreadySubmitted: false,
           error: '',
         });
+      } else if (err.response?.status === 403) {
+        setModuleError(err.response?.data?.error || 'This lab session is not open yet.');
       }
       throw err;
     }
@@ -1366,6 +1409,10 @@ export default function CNLabWorkspace() {
 
   const handleEvaluate = async () => {
     if (timeLocked) return;
+    if (activeQuestionLocked) {
+      alert(`This question is not available yet. It opens at ${questions[activeQuestionIdx]?.availableAt || 'the scheduled time'}.`);
+      return;
+    }
     const currentQuestion = questions[activeQuestionIdx];
     if (!currentQuestion) return;
 
@@ -1525,8 +1572,30 @@ export default function CNLabWorkspace() {
     });
   }, [questions, activeQuestionIdx]);
 
+  // Re-check per-question unlock times as the lab progresses.
+  useEffect(() => {
+    if (!questions.length || moduleInfo?._id === 'free_coding') return undefined;
+    const refreshAvailability = () => {
+      setQuestions((prev) => prev.map((q) => ({
+        ...q,
+        isAvailable: isQuestionUnlocked(q),
+      })));
+    };
+    refreshAvailability();
+    const interval = setInterval(refreshAvailability, 15000);
+    return () => clearInterval(interval);
+  }, [moduleInfo?._id, questions.length]);
+
+  const activeQuestionLocked = questions[activeQuestionIdx]
+    ? !isQuestionUnlocked(questions[activeQuestionIdx])
+    : false;
+
   const handleSubmit = async () => {
     if (timeLocked) return null;
+    if (activeQuestionLocked) {
+      alert(`This question is not available yet. It opens at ${questions[activeQuestionIdx]?.availableAt || 'the scheduled time'}.`);
+      return null;
+    }
     const activeQuestion = questions[activeQuestionIdx];
     if (activeQuestion && passedQuestionIds.has(activeQuestion.id)) {
       const proceed = window.confirm(
@@ -1747,7 +1816,11 @@ export default function CNLabWorkspace() {
 
 
   const question = questions && questions.length > 0 ? questions[activeQuestionIdx] : undefined;
-  const remainingSeconds = attemptInfo?.remainingSeconds ?? ((moduleInfo?.durationMinutes || 60) * 60);
+  const remainingSeconds = attemptInfo?.remainingSeconds ?? (
+    moduleInfo?.endsAt
+      ? Math.max(0, Math.floor((new Date(moduleInfo.endsAt).getTime() - Date.now()) / 1000))
+      : 3600
+  );
   const totalSeconds = attemptInfo?.totalSeconds ?? remainingSeconds;
 
 

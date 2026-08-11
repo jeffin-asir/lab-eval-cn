@@ -1,53 +1,98 @@
-import { useForm } from 'react-hook-form';
+import { useForm, useWatch } from 'react-hook-form';
 import axios from 'axios';
 import { FormSection, FormLabel, ErrorMessage } from '../FormComponents';
 import { CheckIcon, PlusIcon } from '@heroicons/react/24/outline';
 import { API_BASE } from '../../config';
 
-const ModuleForm = ({ 
-  initialModule, 
-  questions, 
-  selectedQuestionIds, 
-  toggleQuestionSelection, 
-  onSubmit, 
-  isLoading, 
-  editingModuleId, 
+const fieldClasses =
+  'w-full border rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500';
+
+const ModuleForm = ({
+  initialModule,
+  questions,
+  selectedQuestionIds,
+  toggleQuestionSelection,
+  questionSchedule,
+  setQuestionSchedule,
+  onSubmit,
+  isLoading,
+  editingModuleId,
   cancelModuleCreation,
   setSelectedQuestionIds,
-  batches = []
+  batches = [],
 }) => {
   const moduleForm = useForm({
-    defaultValues: initialModule
+    defaultValues: initialModule,
   });
+
+  const watchedStartTime = useWatch({ control: moduleForm.control, name: 'startTime' });
+
+  const syncScheduleForSelection = (questionIds, defaultTime) => {
+    setQuestionSchedule((prev) => {
+      const prevMap = new Map(prev.map((entry) => [entry.questionId, entry.availableAt]));
+      return questionIds.map((qId) => ({
+        questionId: qId,
+        availableAt: prevMap.get(qId) || defaultTime || '09:00',
+      }));
+    });
+  };
+
+  const handleToggleQuestion = (questionId) => {
+    toggleQuestionSelection(questionId);
+    const nextIds = selectedQuestionIds.includes(questionId)
+      ? selectedQuestionIds.filter((id) => id !== questionId)
+      : [...selectedQuestionIds, questionId];
+    syncScheduleForSelection(nextIds, watchedStartTime || '09:00');
+  };
 
   const resetToDB = async (moduleId) => {
     try {
       const response = await axios.get(`${API_BASE}/api/modules/${moduleId}`);
+      const data = response.data;
       moduleForm.reset({
-        moduleName: response.data.name,
-        description: response.data.description || '',
-        lab: response.data.lab,
-        maxMarks: response.data.maxMarks,
-        date: response.data.date ? new Date(response.data.date).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
-        durationMinutes: response.data.durationMinutes || 60,
-        targetBatch: response.data.targetBatch || '',
-        sessionSlot: response.data.sessionSlot || 'AN'
+        moduleName: data.name,
+        description: data.description || '',
+        lab: data.lab,
+        maxMarks: data.maxMarks,
+        date: data.date ? new Date(data.date).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
+        startTime: data.startTime || '09:00',
+        endTime: data.endTime || '12:00',
+        targetBatch: data.targetBatch || '',
       });
-      setSelectedQuestionIds(response.data.questions.map(q => typeof q === 'object' ? q._id : q));
-    } catch(err) {
+      const qIds = data.questions.map((q) => (typeof q === 'object' ? q._id : q));
+      setSelectedQuestionIds(qIds);
+      const schedule = Array.isArray(data.questionSchedule) ? data.questionSchedule : [];
+      const scheduleMap = new Map(schedule.map((e) => [String(e.question), e.availableAt]));
+      setQuestionSchedule(
+        qIds.map((qId) => ({
+          questionId: qId,
+          availableAt: scheduleMap.get(String(qId)) || data.startTime || '09:00',
+        }))
+      );
+    } catch (err) {
       console.error('Error fetching module for reset:', err);
     }
   };
+
+  const updateQuestionAvailableAt = (questionId, availableAt) => {
+    setQuestionSchedule((prev) =>
+      prev.map((entry) =>
+        entry.questionId === questionId ? { ...entry, availableAt } : entry
+      )
+    );
+  };
+
+  const selectedQuestions = questions.filter((q) => selectedQuestionIds.includes(q._id));
 
   return (
     <form onSubmit={moduleForm.handleSubmit(onSubmit)} className="space-y-6">
       <FormSection title="Module Details">
         <div>
           <FormLabel htmlFor="moduleName" required>Module Name</FormLabel>
-          <input 
+          <input
             id="moduleName"
             {...moduleForm.register('moduleName', { required: true })}
-            className="w-full border rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" 
+            className="w-full border rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
             placeholder="Enter a descriptive name for this module"
           />
           {moduleForm.formState.errors.moduleName && (
@@ -62,20 +107,32 @@ const ModuleForm = ({
               id="moduleDate"
               type="date"
               {...moduleForm.register('date', { required: true })}
-              className="w-full border rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+              className={fieldClasses}
             />
           </div>
 
           <div>
-            <FormLabel htmlFor="durationMinutes" required>Test Duration</FormLabel>
+            <FormLabel htmlFor="startTime" required>Start Time</FormLabel>
             <input
-              id="durationMinutes"
-              type="number"
-              min="1"
-              {...moduleForm.register('durationMinutes', { required: true, valueAsNumber: true })}
-              className="w-full border rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-              placeholder="Minutes"
+              id="startTime"
+              type="time"
+              step="60"
+              {...moduleForm.register('startTime', { required: true })}
+              className={fieldClasses}
             />
+            <p className="text-xs text-gray-500 mt-1">When students can enter the lab</p>
+          </div>
+
+          <div>
+            <FormLabel htmlFor="endTime" required>End Time</FormLabel>
+            <input
+              id="endTime"
+              type="time"
+              step="60"
+              {...moduleForm.register('endTime', { required: true })}
+              className={fieldClasses}
+            />
+            <p className="text-xs text-gray-500 mt-1">When the lab session closes</p>
           </div>
 
           <div>
@@ -93,57 +150,45 @@ const ModuleForm = ({
               ))}
             </select>
           </div>
-
-          <div>
-            <FormLabel htmlFor="sessionSlot" required>Session</FormLabel>
-            <select
-              id="sessionSlot"
-              {...moduleForm.register('sessionSlot', { required: true })}
-              className="w-full border rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-            >
-              <option value="AN">AN</option>
-              <option value="FN">FN</option>
-            </select>
-          </div>
         </div>
-        
+
         <div>
           <FormLabel htmlFor="moduleDescription">Description</FormLabel>
-          <textarea 
+          <textarea
             id="moduleDescription"
             {...moduleForm.register('description')}
-            className="w-full border rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 h-24" 
+            className="w-full border rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 h-24"
             placeholder="Describe the purpose and content of this module"
           />
         </div>
-        
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <FormLabel htmlFor="moduleLab" required>Lab ID</FormLabel>
-            <input 
+            <input
               id="moduleLab"
               {...moduleForm.register('lab', { required: true })}
-              className="w-full border rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" 
+              className="w-full border rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
               placeholder="Associate with a lab"
             />
             {moduleForm.formState.errors.lab && (
               <ErrorMessage>Lab ID is required</ErrorMessage>
             )}
           </div>
-          
+
           <div>
             <FormLabel htmlFor="moduleMaxMarks">Max Marks</FormLabel>
-            <input 
+            <input
               id="moduleMaxMarks"
-              type="number" 
+              type="number"
               {...moduleForm.register('maxMarks', { valueAsNumber: true })}
-              className="w-full border rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" 
+              className="w-full border rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
               placeholder="Total possible marks"
             />
           </div>
         </div>
       </FormSection>
-      
+
       <FormSection title="Selected Questions">
         <div className="mb-3 text-sm text-gray-500">
           {selectedQuestionIds.length === 0 ? (
@@ -152,7 +197,7 @@ const ModuleForm = ({
             <p>Selected <span className="font-medium text-indigo-600">{selectedQuestionIds.length}</span> questions</p>
           )}
         </div>
-        
+
         <div className="overflow-x-auto border rounded-lg">
           <table className="min-w-full bg-white">
             <thead className="bg-gray-50">
@@ -165,16 +210,16 @@ const ModuleForm = ({
             </thead>
             <tbody className="divide-y divide-gray-200">
               {questions.map((q) => (
-                <tr key={q._id} className={selectedQuestionIds.includes(q._id) ? "bg-indigo-50" : ""}>
+                <tr key={q._id} className={selectedQuestionIds.includes(q._id) ? 'bg-indigo-50' : ''}>
                   <td className="px-4 py-3 whitespace-nowrap">
                     <div className="flex justify-center">
                       <button
                         type="button"
-                        onClick={() => toggleQuestionSelection(q._id)}
+                        onClick={() => handleToggleQuestion(q._id)}
                         className={`w-6 h-6 rounded-full flex items-center justify-center ${
-                          selectedQuestionIds.includes(q._id) 
-                          ? "bg-indigo-600 text-white" 
-                          : "bg-gray-100 text-gray-400 hover:bg-gray-200"
+                          selectedQuestionIds.includes(q._id)
+                            ? 'bg-indigo-600 text-white'
+                            : 'bg-gray-100 text-gray-400 hover:bg-gray-200'
                         }`}
                       >
                         {selectedQuestionIds.includes(q._id) ? (
@@ -194,7 +239,44 @@ const ModuleForm = ({
           </table>
         </div>
       </FormSection>
-      
+
+      {selectedQuestions.length > 0 && (
+        <FormSection title="Question Availability">
+          <p className="text-sm text-gray-500 mb-3">
+            Set when each question becomes accessible during the lab. Defaults to the module start time.
+          </p>
+          <div className="overflow-x-auto border rounded-lg">
+            <table className="min-w-full bg-white">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Question</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Available From</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {selectedQuestions.map((q, idx) => {
+                  const entry = questionSchedule.find((s) => s.questionId === q._id);
+                  return (
+                    <tr key={q._id}>
+                      <td className="px-4 py-3 whitespace-nowrap">Q{idx + 1}: {q.title}</td>
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        <input
+                          type="time"
+                          step="60"
+                          value={entry?.availableAt || watchedStartTime || '09:00'}
+                          onChange={(e) => updateQuestionAvailableAt(q._id, e.target.value)}
+                          className="border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 min-w-[9rem]"
+                        />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </FormSection>
+      )}
+
       <div className="pt-4 border-t flex space-x-4">
         <button
           type="button"
@@ -219,8 +301,8 @@ const ModuleForm = ({
         >
           Cancel
         </button>
-        <button 
-          type="submit" 
+        <button
+          type="submit"
           disabled={isLoading || questions.length === 0}
           className="flex-1 flex justify-center py-2.5 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 transition-all duration-200"
         >

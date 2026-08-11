@@ -38,14 +38,14 @@ const SendModuleModal = ({
                 Date {selectedModule.date ? new Date(selectedModule.date).toLocaleDateString() : '-'}
               </p>
               <p className="text-sm text-gray-500 mt-1">
-                Batch {selectedModule.targetBatch || 'All'} · {selectedModule.sessionSlot || '-'} · {selectedModule.durationMinutes || 60} minutes
+                Batch {selectedModule.targetBatch || 'All'} · {selectedModule.startTime || '09:00'} – {selectedModule.endTime || '12:00'}
               </p>
             </div>
           )}
           
           <div className="mt-4 p-3 bg-blue-50 rounded-md">
             <p className="text-sm text-blue-800">
-              <span className="font-medium">Note:</span> This will make the module available to students in the configured batch until the test duration ends.
+              <span className="font-medium">Note:</span> This will make the module available to students in the configured batch during the scheduled time window ({selectedModule?.startTime || '09:00'} – {selectedModule?.endTime || '12:00'}).
             </p>
           </div>
 
@@ -70,7 +70,9 @@ const SendModuleModal = ({
                     <div className="min-w-0">
                       <p className="text-sm font-medium text-gray-900 truncate">{assignment.moduleName}</p>
                       <p className="text-xs text-gray-500">
-                        {assignment.slotKey || '-'} · Batch {assignment.targetBatch || 'All'} · Ends {assignment.endsAt ? new Date(assignment.endsAt).toLocaleString() : '-'}
+                        {assignment.startTime && assignment.endTime
+                          ? `${assignment.startTime} – ${assignment.endTime}`
+                          : assignment.slotKey || '-'} · Batch {assignment.targetBatch || 'All'} · Ends {assignment.endsAt ? new Date(assignment.endsAt).toLocaleString() : '-'}
                       </p>
                     </div>
                     <button

@@ -1,39 +1,20 @@
-// Lab sessions are split into two daily slots:
-//   FN (forenoon): 00:30 -> 13:00 (same day)
-//   AN (afternoon): 13:00 -> 17:30 (same day)
-//
-// A module assigned during a slot stays visible to students for the rest of
-// that slot, surviving logins/reconnects, and automatically stops being
-// "current" the instant the next slot begins - unless the teacher explicitly
-// reassigns or clears it sooner.
-//
-// All time math uses the server's local clock consistently (getHours/getDate
-// etc.), so this assumes the server's system timezone is the lab's timezone.
+// Deprecated: use utils/labSession.js instead.
+// Kept for backward compatibility with existing FN/AN data and imports.
 
-const FN_START_MIN = 30;           // 00:30
-const AN_START_MIN = 13 * 60;      // 13:00
-const AN_END_MIN = 17 * 60 + 30;   // 17:30
-
-function dateKey(d) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
+export { parseSlotKey, buildSlotKey, normalizeSessionId } from './labSession.js';
 
 export function getCurrentSlotKey(now = new Date()) {
   const minutesSinceMidnight = now.getHours() * 60 + now.getMinutes();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  const date = `${y}-${m}-${day}`;
 
-  if (minutesSinceMidnight >= FN_START_MIN && minutesSinceMidnight < AN_START_MIN) {
-    // 00:30 - 12:59 -> FN slot, anchored to today
-    return `${dateKey(now)}_FN`;
+  if (minutesSinceMidnight >= 30 && minutesSinceMidnight < 13 * 60) {
+    return `${date}_0030_1300`;
   }
-
-  if (minutesSinceMidnight >= AN_START_MIN && minutesSinceMidnight < AN_END_MIN) {
-    // 13:00 - 17:29 -> AN slot, anchored to today
-    return `${dateKey(now)}_AN`;
+  if (minutesSinceMidnight >= 13 * 60 && minutesSinceMidnight < 17 * 60 + 30) {
+    return `${date}_1300_1730`;
   }
-
-  // Outside teaching hours, default to the nearest upcoming slot.
-  return `${dateKey(now)}_${minutesSinceMidnight < FN_START_MIN ? 'FN' : 'AN'}`;
+  return `${date}_${minutesSinceMidnight < 30 ? '0030_1300' : '1300_1730'}`;
 }

@@ -9,5 +9,5 @@ export {
   ModuleTable,
   QuestionTable,
   ModuleForm,
-  QuestionForm
+  QuestionForm,
 };

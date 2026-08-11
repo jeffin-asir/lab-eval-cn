@@ -8,8 +8,10 @@ import LabAssignment from '../models/LabAssignment.js';
 import { protect, authorize } from '../middleware/auth.js';
 import { requireAuth } from '../middleware/auth.js';
 import { ensureSessionContainer, stopSessionContainer } from '../controllers/sshController.js';
-import EvaluationRun from '../models/EvaluationRun.js';
-import TestAttempt from '../models/TestAttempt.js';
+import {
+  buildQuestionSchedule,
+  isQuestionAvailable,
+} from '../utils/labSession.js';
 
 const router = express.Router();
 
@@ -33,6 +35,32 @@ async function expireEndedAssignments(now = new Date()) {
       },
     }
   );
+}
+
+async function getStudentUpcomingAssignments(student, now = new Date()) {
+  await expireEndedAssignments(now);
+  const assignments = await LabAssignment.find({
+    status: 'active',
+    activeModule: { $ne: null },
+    startsAt: { $gt: now },
+    $or: [
+      { endsAt: null },
+      { endsAt: { $gt: now } },
+    ],
+    $and: [
+      {
+        $or: [
+          { targetBatch: { $in: [null, ''] } },
+          { targetBatch: student.batch || '' },
+        ],
+      },
+    ],
+  })
+    .populate('activeModule', 'name startTime endTime date')
+    .sort({ startsAt: 1 })
+    .lean();
+
+  return assignments;
 }
 
 async function getStudentVisibleAssignments(student, now = new Date()) {
@@ -71,13 +99,14 @@ async function getStudentVisibleAssignments(student, now = new Date()) {
     }).lean();
 
     const assignmentStillAvailable = !assignment.endsAt || new Date(assignment.endsAt) > now;
+    const assignmentHasStarted = !assignment.startsAt || new Date(assignment.startsAt) <= now;
     const attemptHasTime =
       existingAttempt?.status === 'active' &&
       existingAttempt.endsAt &&
       new Date(existingAttempt.endsAt) > now;
     const attemptExpired = !!existingAttempt && !attemptHasTime;
 
-    if (!attemptExpired && (assignmentStillAvailable || attemptHasTime)) {
+    if (!attemptExpired && assignmentHasStarted && (assignmentStillAvailable || attemptHasTime)) {
       visible.push(assignment);
     }
   }
@@ -152,6 +181,7 @@ router.get('/student-dashboard', requireAuth, async (req, res) => {
 
     const now = new Date();
     const visibleAssignments = await getStudentVisibleAssignments(student, now);
+    const upcomingAssignments = await getStudentUpcomingAssignments(student, now);
 
     const runs = await EvaluationRun.aggregate([
       { $match: { userId: student.user_id, runType: 'submit' } },
@@ -167,7 +197,7 @@ router.get('/student-dashboard', requireAuth, async (req, res) => {
     ]);
 
     const moduleIds = runs.map((r) => r._id.moduleId).filter(Boolean);
-    const modules = await CNModule.find({ _id: { $in: moduleIds } }).select('name targetBatch sessionSlot durationMinutes').lean();
+    const modules = await CNModule.find({ _id: { $in: moduleIds } }).select('name targetBatch startTime endTime').lean();
     const moduleById = new Map(modules.map((m) => [m._id.toString(), m]));
 
     res.json({
@@ -177,11 +207,23 @@ router.get('/student-dashboard', requireAuth, async (req, res) => {
             module: assignment.activeModule,
             slotKey: assignment.slotKey,
             assignedAt: assignment.assignedAt,
+            startsAt: assignment.startsAt,
             endsAt: assignment.endsAt,
+            startTime: assignment.startTime || assignment.activeModule?.startTime || '',
+            endTime: assignment.endTime || assignment.activeModule?.endTime || '',
             targetBatch: assignment.targetBatch,
-            sessionSlot: assignment.sessionSlot,
-            durationMinutes: assignment.durationMinutes,
+            canEnter: !assignment.startsAt || new Date(assignment.startsAt) <= now,
           })),
+      upcomingSessions: upcomingAssignments.map((assignment) => ({
+        assignmentId: assignment._id,
+        module: assignment.activeModule,
+        slotKey: assignment.slotKey,
+        startsAt: assignment.startsAt,
+        endsAt: assignment.endsAt,
+        startTime: assignment.startTime || assignment.activeModule?.startTime || '',
+        endTime: assignment.endTime || assignment.activeModule?.endTime || '',
+        targetBatch: assignment.targetBatch,
+      })),
       previousTests: runs.map((r) => ({
         moduleId: r._id.moduleId,
         moduleName: moduleById.get(r._id.moduleId)?.name || 'CN Lab',
@@ -255,12 +297,19 @@ router.post('/test-attempts/start', requireAuth, async (req, res) => {
       });
     }
 
+    if (assignment.startsAt && new Date(assignment.startsAt) > now) {
+      return res.status(403).json({
+        error: `This lab session has not started yet. It opens at ${assignment.startTime || new Date(assignment.startsAt).toLocaleTimeString()}.`,
+        startsAt: assignment.startsAt,
+      });
+    }
+
     if (assignment.endsAt && new Date(assignment.endsAt) <= now) {
       return res.status(410).json({ error: 'This lab session is no longer available.' });
     }
 
     const startedAt = now;
-    const baseEndsAt = new Date(startedAt.getTime() + (assignment.durationMinutes || 60) * 60 * 1000);
+    const baseEndsAt = new Date(assignment.endsAt);
 
     const attempt = await TestAttempt.findOneAndUpdate(
       { userId: student.user_id, moduleId, slotKey: assignment.slotKey },
@@ -484,7 +533,7 @@ router.patch('/modules/:id/quick-update', protect, async (req, res) => {
   }
 });
 
-// Get the currently assigned module (global, slot-aware — see labSlot.js).
+// Get the currently assigned module (global, slot-aware — see labSession.js).
 // :sessionId is accepted for URL/back-compat but no longer used to look up
 // the assignment, since it's now a single global record rather than
 // per-session.
@@ -510,11 +559,31 @@ router.get('/:sessionId/current-module', requireAuth, async (req, res) => {
       assignmentId: assignment._id,
       slotKey: assignment.slotKey,
       targetBatch: assignment.targetBatch,
-      sessionSlot: assignment.sessionSlot,
-      durationMinutes: assignment.durationMinutes,
+      startTime: assignment.startTime || assignment.activeModule?.startTime || '',
+      endTime: assignment.endTime || assignment.activeModule?.endTime || '',
+      startsAt: assignment.startsAt,
       assignedAt: assignment.assignedAt,
       endsAt: assignment.endsAt,
     };
+
+    const questionIds = (response.questions || []).map((q) => q._id || q);
+    const schedule = buildQuestionSchedule(response, questionIds);
+    const scheduleById = new Map(schedule.map((s) => [s.question, s]));
+    const now = new Date();
+
+    if (Array.isArray(response.questions)) {
+      response.questions = response.questions.map((q) => {
+        const obj = typeof q.toObject === 'function' ? q.toObject() : { ...q };
+        const entry = scheduleById.get((obj._id || obj).toString());
+        const availableAt = entry?.availableAt || response.startTime || '09:00';
+        const availableAtDate = entry?.availableAtDate;
+        return {
+          ...obj,
+          availableAt,
+          isAvailable: isQuestionAvailable({ availableAtDate }, now),
+        };
+      });
+    }
 
     res.status(200).json(response);
   } catch (err) {

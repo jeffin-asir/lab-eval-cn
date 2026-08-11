@@ -5,15 +5,6 @@ import { requireAuth } from '../middleware/auth.js';
 
 const router = Router();
 
-function generateSessionId() {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = `${now.getMonth() + 1}`.padStart(2, '0');
-  const day = `${now.getDate()}`.padStart(2, '0');
-  const period = now.getHours() < 12 ? 'FN' : 'AN';
-  return `${year}${month}${day}_${period}`;
-}
-
 router.get('/fetch', requireAuth, async (req, res) => {
   try {
     const userId = req.user.user_id;
@@ -29,7 +20,7 @@ router.get('/fetch', requireAuth, async (req, res) => {
         const session = await getActiveSessionForUser(userId);
         sessionId = session.sessionId;
       } catch (err) {
-        sessionId = generateSessionId();
+        return res.status(400).json({ error: 'sessionId is required when no active lab session exists.' });
       }
     }
 
@@ -189,8 +180,9 @@ router.post('/evaluate/:studentId', requireAuth, async (req, res) => {
 router.get('/student-submissions/:studentId', requireAuth, async (req, res) => {
   try {
     const userId = req.user.user_id;
-    const sessionId = generateSessionId();
+    const sessionId = req.query.sessionId;
     if (!userId) return res.status(400).json({ error: 'Missing userId' });
+    if (!sessionId) return res.status(400).json({ error: 'sessionId query parameter is required' });
     // Return all submissions for this student in this session
     const submissions = await Submission.find({ userId, sessionId }).sort({ submittedAt: -1 });
     res.json(submissions);
@@ -205,7 +197,8 @@ router.get('/student-submissions/:studentId', requireAuth, async (req, res) => {
 // Get all best submissions for the current session (for teacher dashboard)
 router.get('/best-submissions', async (req, res) => {
   try {
-    const sessionId = generateSessionId();
+    const sessionId = req.query.sessionId;
+    if (!sessionId) return res.status(400).json({ error: 'sessionId query parameter is required' });
     // Return all best submissions for this session, grouped by userId
     const bestSubs = await Submission.find({ sessionId, isBestSubmission: true }).lean();
     const grouped = {};
@@ -223,7 +216,8 @@ router.get('/best-submissions', async (req, res) => {
 // Export all best submissions as a CSV file (for teacher report download)
 router.get('/export-best-csv', async (req, res) => {
   try {
-    const sessionId = generateSessionId();
+    const sessionId = req.query.sessionId;
+    if (!sessionId) return res.status(400).send('sessionId query parameter is required');
     const bestSubs = await Submission.find({ sessionId, isBestSubmission: true }).lean();
     if (!bestSubs.length) return res.status(404).send('No submissions found');
 

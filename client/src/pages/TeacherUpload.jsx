@@ -72,9 +72,9 @@ const initialModule = {
   lab: '123',
   maxMarks: '',
   date: new Date().toISOString().slice(0, 10),
-  durationMinutes: 60,
+  startTime: '09:00',
+  endTime: '12:00',
   targetBatch: '',
-  sessionSlot: 'AN'
 };
 
 export default function TeacherUpload() {
@@ -89,6 +89,7 @@ export default function TeacherUpload() {
   const [editingModuleId, setEditingModuleId] = useState(null);
   const [isCreatingModule, setIsCreatingModule] = useState(false);
   const [selectedQuestionIds, setSelectedQuestionIds] = useState([]);
+  const [questionSchedule, setQuestionSchedule] = useState([]);
   const [showSendModuleModal, setShowSendModuleModal] = useState(false);
   const [selectedModuleToSend, setSelectedModuleToSend] = useState(null);
   const [sessions, setSessions] = useState([]);
@@ -512,9 +513,13 @@ export default function TeacherUpload() {
         creator: teacher?.user_id || 'networklab',
         maxMarks: data.maxMarks,
         date: data.date,
-        durationMinutes: data.durationMinutes,
+        startTime: data.startTime,
+        endTime: data.endTime,
         targetBatch: data.targetBatch,
-        sessionSlot: data.sessionSlot,
+        questionSchedule: questionSchedule.map((entry) => ({
+          question: entry.questionId,
+          availableAt: entry.availableAt,
+        })),
       };
       
       let response;
@@ -534,6 +539,7 @@ export default function TeacherUpload() {
         moduleForm.reset();
         setModuleDefaults(initialModule);
         setSelectedQuestionIds([]);
+        setQuestionSchedule([]);
         setIsCreatingModule(false);
         setEditingModuleId(null);
         fetchModules();
@@ -550,23 +556,30 @@ export default function TeacherUpload() {
   };
 
   const editModule = (module) => {
+    const qIds = module.questions.map((q) => (typeof q === 'object' ? q._id : q));
     const defaults = {
       moduleName: module.name,
       description: module.description || '',
       lab: module.lab,
       maxMarks: module.maxMarks,
       date: module.date ? new Date(module.date).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
-      durationMinutes: module.durationMinutes || 60,
+      startTime: module.startTime || '09:00',
+      endTime: module.endTime || '12:00',
       targetBatch: module.targetBatch || '',
-      sessionSlot: module.sessionSlot || 'AN'
     };
     setModuleDefaults(defaults);
     moduleForm.reset(defaults);
-    
-    // Set selected questions
-    setSelectedQuestionIds(module.questions.map(q => typeof q === 'object' ? q._id : q));
-    
-    // Set editing state
+    setSelectedQuestionIds(qIds);
+
+    const schedule = Array.isArray(module.questionSchedule) ? module.questionSchedule : [];
+    const scheduleMap = new Map(schedule.map((e) => [String(e.question), e.availableAt]));
+    setQuestionSchedule(
+      qIds.map((qId) => ({
+        questionId: qId,
+        availableAt: scheduleMap.get(String(qId)) || module.startTime || '09:00',
+      }))
+    );
+
     setEditingModuleId(module._id);
     setIsCreatingModule(true);
     setActiveTab('modules');
@@ -589,6 +602,7 @@ export default function TeacherUpload() {
   const cancelModuleCreation = () => {
     setIsCreatingModule(false);
     setSelectedQuestionIds([]);
+    setQuestionSchedule([]);
     setEditingModuleId(null);
     moduleForm.reset();
     setModuleDefaults(initialModule);
@@ -637,8 +651,8 @@ export default function TeacherUpload() {
       const moduleInfo = modules.find(m => m._id === selectedModuleToSend);
       const response = await axios.post(`${API_BASE}/api/modules/${selectedModuleToSend}/assign-to-test-session`, {
         targetBatch: moduleInfo?.targetBatch || '',
-        sessionSlot: moduleInfo?.sessionSlot || '',
-        durationMinutes: moduleInfo?.durationMinutes || 60,
+        startTime: moduleInfo?.startTime,
+        endTime: moduleInfo?.endTime,
       });
       
       if (response.data && response.data.success) {
@@ -802,6 +816,8 @@ export default function TeacherUpload() {
                   questions={questions}
                   selectedQuestionIds={selectedQuestionIds}
                   toggleQuestionSelection={toggleQuestionSelection}
+                  questionSchedule={questionSchedule}
+                  setQuestionSchedule={setQuestionSchedule}
                   onSubmit={createModule}
                   isLoading={isLoading}
                   editingModuleId={editingModuleId}

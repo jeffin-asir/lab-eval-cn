@@ -2,12 +2,18 @@ import Docker from 'dockerode';
 import getPort from 'get-port';
 import dotenv from 'dotenv';
 import net from 'net';
+import { normalizeSessionId as normalizeLabSessionId } from '../utils/labSession.js';
 
 dotenv.config();
 
 const docker = new Docker(); // Connects via Unix socket by default
 const SSH_IMAGE = process.env.SSH_IMAGE || 'lab-cn-image';
+const LAB_RESOURCE_PREFIX = 'lab_';
 const containerLocks = new Map();
+
+export function buildLabResourceName(userId, sessionId) {
+  return `${LAB_RESOURCE_PREFIX}${userId}_${sessionId}`;
+}
 
 async function withContainerLock(key, fn) {
   const previous = containerLocks.get(key) || Promise.resolve();
@@ -29,25 +35,8 @@ async function withContainerLock(key, fn) {
   }
 }
 
-/**
- * Generates session ID like 20150616_FN or 20250616_AN
- */
-function generateSessionId() {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = `${now.getMonth() + 1}`.padStart(2, '0');
-  const day = `${now.getDate()}`.padStart(2, '0');
-  const period = now.getHours() < 12 ? 'FN' : 'AN'; 
-  return `${year}${month}${day}_${period}`;         
-}
-
 export function normalizeSessionId(sessionId) {
-  if (!sessionId) return null;
-  const value = String(sessionId).trim();
-  if (!value) return null;
-  const [datePart, slotPart] = value.split('_');
-  if (!datePart || !slotPart) return value.replace(/-/g, '');
-  return `${datePart.replace(/-/g, '')}_${slotPart.toUpperCase()}`;
+  return normalizeLabSessionId(sessionId);
 }
 
 function parsePort(value) {
@@ -184,9 +173,13 @@ async function applyContainerAcl(container, containerName) {
  * Create or reuse a Docker container for a given userId-sessionId pair.
  */
 export async function createContainerForUser(userId, requestedSessionId = null) {
-  const sessionId = normalizeSessionId(requestedSessionId) || generateSessionId();
-  const containerName = `lab_exam_${userId}_${sessionId}`;
-  const volumeName = `lab_data_${userId}_${sessionId}`;
+  const sessionId = normalizeSessionId(requestedSessionId);
+  if (!sessionId) {
+    throw new Error('sessionId is required. Pass slotKey from the active lab assignment.');
+  }
+  const resourceName = buildLabResourceName(userId, sessionId);
+  const containerName = resourceName;
+  const volumeName = resourceName;
 
   return withContainerLock(containerName, async () => {
 

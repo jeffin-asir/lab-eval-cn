@@ -4,10 +4,11 @@ import TestSelector from './TestSelector';
 import QuestionTabs from './QuestionTabs';
 import { processCodeBlocks } from '../utils/codeBlockHelper';
 import { API_BASE } from '../../config';
-import { 
+import {
   XMarkIcon,
   AcademicCapIcon,
-  InformationCircleIcon
+  InformationCircleIcon,
+  LockClosedIcon,
 } from '@heroicons/react/24/outline';
 
 const STARTER_LANGUAGES = [
@@ -16,8 +17,6 @@ const STARTER_LANGUAGES = [
 ];
 
 function starterCodeForLanguages(precode, fileName = '') {
-  // Questions created before multi-language boilerplate used one string. Keep
-  // those readable rather than attempting to render an object as a React child.
   if (typeof precode === 'string') {
     const language = /\.java$/i.test(fileName) ? 'java' : 'c';
     return [{ key: language, label: language === 'java' ? 'Java' : 'C', code: precode }];
@@ -28,11 +27,11 @@ function starterCodeForLanguages(precode, fileName = '') {
     .filter((language) => language.code);
 }
 
-export default function QuestionPane({ 
-  questions, 
-  activeQuestionIdx, 
-  setActiveQuestionIdx, 
-  onClose, 
+export default function QuestionPane({
+  questions,
+  activeQuestionIdx,
+  setActiveQuestionIdx,
+  onClose,
   testCaseResults,
   activeTab: controlledTab,
   setActiveTab: setControlledTab,
@@ -52,8 +51,8 @@ export default function QuestionPane({
   const setActiveTab = setControlledTab ?? setInternalTab;
   const question = questions[activeQuestionIdx];
   const [processedDescription, setProcessedDescription] = useState('');
-  
-  // Process description to fix code blocks when question changes
+  const questionLocked = question?.isAvailable === false;
+
   useEffect(() => {
     if (question && question.description) {
       setProcessedDescription(processCodeBlocks(question.description));
@@ -62,18 +61,28 @@ export default function QuestionPane({
 
   return (
     <div className="flex flex-col h-full bg-gradient-to-br from-slate-50 to-white">
-      {/* Question Tabs */}
       <div className="flex items-center justify-between border-b bg-white">
         <div>
-          {questions.map((q, idx) => (
-          <button
-            key={q.id || idx}
-            onClick={() => setActiveQuestionIdx(idx)}
-            className={`px-4 py-2 font-semibold ${activeQuestionIdx === idx ? 'border-b-2 border-indigo-600 text-indigo-600 bg-white' : 'text-gray-600 hover:bg-gray-100'}`}
-          >
-            Q{idx + 1}
-          </button>
-        ))}
+          {questions.map((q, idx) => {
+            const locked = q.isAvailable === false;
+            return (
+              <button
+                key={q.id || idx}
+                onClick={() => setActiveQuestionIdx(idx)}
+                className={`px-4 py-2 font-semibold inline-flex items-center gap-1 ${
+                  activeQuestionIdx === idx
+                    ? 'border-b-2 border-indigo-600 text-indigo-600 bg-white'
+                    : locked
+                      ? 'text-gray-400 hover:bg-gray-50'
+                      : 'text-gray-600 hover:bg-gray-100'
+                }`}
+                title={locked ? `Available at ${q.availableAt || 'scheduled time'}` : undefined}
+              >
+                Q{idx + 1}
+                {locked && <LockClosedIcon className="w-3.5 h-3.5" />}
+              </button>
+            );
+          })}
         </div>
         <div>
           {onClose && (
@@ -99,28 +108,36 @@ export default function QuestionPane({
             </h2>
             <p className="text-xs text-gray-500">Read carefully before coding</p>
           </div>
-        </div>        <div className="flex items-center space-x-2 text-sm text-gray-600 bg-gray-50 px-3 py-2 rounded-full border border-gray-200">
-            <AcademicCapIcon className="w-4 h-4 text-blue-500" />
-            <span className="font-medium">{question.maxMarks ?? '—'} marks (teacher assigned)</span>
+        </div>
+        <div className="flex items-center space-x-2 text-sm text-gray-600 bg-gray-50 px-3 py-2 rounded-full border border-gray-200">
+          <AcademicCapIcon className="w-4 h-4 text-blue-500" />
+          <span className="font-medium">{question.maxMarks ?? '—'} marks (teacher assigned)</span>
         </div>
       </div>
 
-      {/* Tabs */}
-      <QuestionTabs 
-        activeTab={activeTab} 
-        setActiveTab={setActiveTab} 
-        question={question} 
+      {questionLocked && (
+        <div className="mx-4 mt-4 p-3 rounded-lg border border-amber-200 bg-amber-50 text-sm text-amber-900 flex items-center gap-2">
+          <LockClosedIcon className="w-4 h-4 shrink-0" />
+          <span>
+            This question unlocks at <strong>{question.availableAt || 'the scheduled time'}</strong>.
+            You can read it now, but run, evaluate, and submit stay disabled until then.
+          </span>
+        </div>
+      )}
+
+      <QuestionTabs
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        question={question}
       />
 
-      {/* Content */}
       <div className="flex-1 overflow-auto">
         {activeTab === 'description' && (
           <div className="p-6 fade-in-up space-y-4">
-            <div 
+            <div
               className="prose prose-sm max-w-none leading-relaxed text-[15px]"
               dangerouslySetInnerHTML={{ __html: processedDescription || question.description }}
             />
-            {/* Render separate image if question.image is present */}
             {question.image && (
               <img
                 src={question.image.startsWith('http') ? question.image : `${API_BASE}${question.image}`}
@@ -151,10 +168,10 @@ export default function QuestionPane({
               </div>
             ))}
           </div>
-        )}          
+        )}
         {activeTab === 'testcases' && (
           <div className="fade-in-up">
-            <TestSelector 
+            <TestSelector
               question={question}
               testCaseResults={testCaseResults}
               evalMessage={evalMessage}

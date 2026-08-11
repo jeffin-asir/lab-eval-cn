@@ -126,7 +126,7 @@ export default function TeacherTimeControl() {
                 <option value="">Choose currently active module</option>
                 {activeAssignments.map((assignment) => (
                   <option key={assignment._id} value={assignment._id}>
-                    {assignment.moduleName} · {assignment.slotKey} · Batch {assignment.targetBatch || 'All'}
+                    {assignment.moduleName} · {assignment.startTime && assignment.endTime ? `${assignment.startTime} – ${assignment.endTime}` : assignment.slotKey} · Batch {assignment.targetBatch || 'All'}
                   </option>
                 ))}
               </select>
@@ -143,7 +143,7 @@ export default function TeacherTimeControl() {
               </select>
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Session</label>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Lab Window</label>
               <select
                 value={form.slotKey}
                 onChange={(e) => setForm({ ...form, slotKey: e.target.value })}

@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import Editor from '@monaco-editor/react';
 import { PlusIcon } from '@heroicons/react/24/outline';
 import {
-  PAYLOAD_TYPES, buildReadSkipPattern, byteOffsetAt, encodePayload,
-  newBuilderCase, serializeBuilderCases, testcasesToBuilder, parseEscapeSequence,
+  PAYLOAD_TYPES, buildReadSkipPattern, byteRangeForSourceSelection, encodePayload,
+  getPayloadByteSpans, newBuilderCase, serializeBuilderCases, testcasesToBuilder, parseEscapeSequence,
 } from './testcaseBuilderUtils';
 
 const stableJson = (value) => JSON.stringify(value || {});
@@ -157,7 +157,7 @@ function CommunicationCard({ communication, endpoints, skipEnabled, onSkipMode, 
   const canSelectSkip = communication.type === 'string' || communication.type === 'character';
   const addSelectionAsSkippedBytes = (start, end, value) => {
     if (!skipEnabled || !canSelectSkip || start === end) return;
-    const range = { start: byteOffsetAt(value, start), end: byteOffsetAt(value, end) };
+    const range = byteRangeForSourceSelection(value, start, end);
     const existing = communication.skippedBytes || [];
     if (!existing.some((item) => item.start === range.start && item.end === range.end)) onChange({ skippedBytes: [...existing, range] });
   };
@@ -274,21 +274,20 @@ function EscapeSequencePreview({ value = '' }) {
 
 function SkippedTextPreview({ value, skippedBytes = [] }) {
   const renderParts = () => {
+    const byteSpans = getPayloadByteSpans(value);
+    const totalBytes = byteSpans.at(-1)?.byteEnd || 0;
     const ranges = [...skippedBytes]
-      .map(({ start, end }) => ({ start: Math.max(0, start), end: Math.min(value.length, end) }))
+      .map(({ start, end }) => ({ start: Math.max(0, start), end: Math.min(totalBytes, end) }))
       .filter(({ start, end }) => end > start)
       .sort((a, b) => a.start - b.start);
-    const parts = [];
-    let position = 0;
-    ranges.forEach(({ start, end }, index) => {
-      if (start > position) parts.push(<span key={`plain-${index}`}>{value.slice(position, start)}</span>);
-      if (end <= position) return;
-      const safeStart = Math.max(position, start);
-      parts.push(<mark key={`skip-${index}`} className="bg-amber-200 text-gray-900 rounded px-0.5">{value.slice(safeStart, end)}</mark>);
-      position = Math.max(position, end);
+    const isSkipped = ({ byteStart, byteEnd }) => ranges.some((range) => range.start < byteEnd && range.end > byteStart);
+
+    return byteSpans.map((span) => {
+      const sourceText = value.slice(span.sourceStart, span.sourceEnd);
+      return isSkipped(span)
+        ? <mark key={span.sourceStart} className="bg-amber-200 text-gray-900 rounded px-0.5">{sourceText}</mark>
+        : <span key={span.sourceStart}>{sourceText}</span>;
     });
-    if (position < value.length || !parts.length) parts.push(<span key="tail">{value.slice(position)}</span>);
-    return parts;
   };
   return <div className="mt-2 rounded border border-amber-200 bg-amber-50 p-2 text-xs text-gray-700">
     <p className="mb-1 font-sans text-amber-900">Skipped text preview (amber portions are not matched)</p>

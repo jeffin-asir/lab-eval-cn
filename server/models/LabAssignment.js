@@ -8,10 +8,13 @@ const labAssignmentSchema = new mongoose.Schema(
   {
     key: { type: String, default: 'global', unique: true },
     activeModule: { type: mongoose.Types.ObjectId, ref: 'Module', default: null },
-    slotKey: { type: String, default: null }, // e.g. "2026-07-10_AN"
+    slotKey: { type: String, default: null }, // e.g. "{moduleId}_2026-07-10_0900_1230"
     targetBatch: { type: String, default: '' },
-    sessionSlot: { type: String, default: '' },
-    durationMinutes: { type: Number, default: 60 },
+    startTime: { type: String, default: '' }, // HH:MM
+    endTime: { type: String, default: '' }, // HH:MM
+    startsAt: { type: Date, default: null },
+    sessionSlot: { type: String, default: '' }, // Legacy FN/AN
+    durationMinutes: { type: Number, default: 60 }, // Legacy
     assignedAt: { type: Date, default: null },
     endsAt: { type: Date, default: null },
     status: {

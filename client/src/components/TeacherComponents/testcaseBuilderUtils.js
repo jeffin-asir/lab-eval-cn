@@ -91,6 +91,78 @@ export function parseEscapedPayloadText(value) {
   return output;
 }
 
+/**
+ * Map the text shown in the payload editor to the decoded bytes it produces.
+ * An escape such as "\\n" occupies two editor characters, but exactly one
+ * decoded byte.  Keeping both ranges lets UI previews highlight byte ranges
+ * without treating decoded-byte offsets as source-text offsets.
+ */
+export function getPayloadByteSpans(value) {
+  const text = String(value ?? '');
+  const spans = [];
+  let sourceOffset = 0;
+  let byteOffset = 0;
+
+  const addSpan = (sourceEnd) => {
+    spans.push({
+      sourceStart: sourceOffset,
+      sourceEnd,
+      byteStart: byteOffset,
+      byteEnd: byteOffset + 1,
+    });
+    sourceOffset = sourceEnd;
+    byteOffset += 1;
+  };
+
+  while (sourceOffset < text.length) {
+    if (text[sourceOffset] !== '\\') {
+      addSpan(sourceOffset + 1);
+      continue;
+    }
+
+    const next = text[sourceOffset + 1];
+    if (next === undefined) {
+      addSpan(sourceOffset + 1);
+      continue;
+    }
+
+    if (next === '\\') {
+      addSpan(sourceOffset + 2);
+      continue;
+    }
+
+    const parsed = parseEscapeSequence(text, sourceOffset);
+    if (parsed) {
+      addSpan(sourceOffset + parsed.length);
+      continue;
+    }
+
+    // Invalid escapes are encoded as a literal backslash followed by the
+    // next source character, matching parseEscapedPayloadText.
+    addSpan(sourceOffset + 1);
+  }
+
+  return spans;
+}
+
+/**
+ * Convert an editor selection to decoded-byte offsets. Selecting either half
+ * of an escape token (for example just the "n" in "\\n") selects the whole
+ * byte represented by that token.
+ */
+export function byteRangeForSourceSelection(value, start, end) {
+  const selectionStart = Math.max(0, Math.min(Number(start) || 0, String(value ?? '').length));
+  const selectionEnd = Math.max(selectionStart, Math.min(Number(end) || 0, String(value ?? '').length));
+  const selected = getPayloadByteSpans(value)
+    .filter((span) => span.sourceStart < selectionEnd && span.sourceEnd > selectionStart);
+
+  if (!selected.length) {
+    const offset = byteOffsetAt(value, selectionStart);
+    return { start: offset, end: offset };
+  }
+  return { start: selected[0].byteStart, end: selected.at(-1).byteEnd };
+}
+
 export function formatEscapedPayloadText(value) {
   let output = '';
   for (const character of String(value)) {
