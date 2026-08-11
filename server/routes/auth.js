@@ -4,6 +4,8 @@ import User from '../models/User.js';
 import PasswordResetRequest from '../models/PasswordResetRequest.js';
 import { authorize, clearAuthCookie, getUserFromRequest, requireAuth, setAuthCookie, signUserToken } from '../middleware/auth.js';
 import StudentConnection from '../models/StudentConnection.js';
+import StudentLoginAudit from '../models/StudentLoginAudit.js';
+import LabAssignment from '../models/LabAssignment.js';
 import SessionDisconnectRequest from '../models/SessionDisconnectRequest.js';
 import { activeConnectionFilter, createStudentConnection, revokeStudentConnection } from '../utils/studentConnections.js';
 
@@ -200,8 +202,59 @@ router.post('/session-disconnect-request', async (req, res) => {
 
 router.get('/active-students', requireAuth, authorize('faculty', 'admin'), async (req, res) => {
   try {
-    const connections = await StudentConnection.find({ revokedAt: null, expiresAt: { $gt: new Date() } })
-      .populate('user', 'name batch roll_number').sort({ lastSeenAt: -1 }).lean();
+    const now = new Date();
+    const [connections, liveAssignments] = await Promise.all([
+      StudentConnection.find({ revokedAt: null, expiresAt: { $gt: now } })
+        .populate('user', 'name batch roll_number').sort({ lastSeenAt: -1 }).lean(),
+      LabAssignment.find({
+        status: 'active',
+        activeModule: { $ne: null },
+        $and: [
+          { $or: [{ startsAt: null }, { startsAt: { $lte: now } }] },
+          { $or: [{ endsAt: null }, { endsAt: { $gt: now } }] },
+        ],
+      }).select('_id').lean(),
+    ]);
+    const assignmentIds = liveAssignments.map((assignment) => assignment._id);
+    const audits = assignmentIds.length
+      ? await StudentLoginAudit.find({ assignmentId: { $in: assignmentIds } })
+        .populate('moduleId', 'name').lean()
+      : [];
+
+    const signalsByUser = new Map();
+    const auditsByAssignment = new Map();
+    for (const audit of audits) {
+      const key = audit.assignmentId.toString();
+      if (!auditsByAssignment.has(key)) auditsByAssignment.set(key, []);
+      auditsByAssignment.get(key).push(audit);
+    }
+    for (const assignmentAudits of auditsByAssignment.values()) {
+      const devicesByUser = new Map();
+      const usersByDevice = new Map();
+      for (const audit of assignmentAudits) {
+        if (!devicesByUser.has(audit.userId)) devicesByUser.set(audit.userId, new Set());
+        devicesByUser.get(audit.userId).add(audit.deviceKey);
+        if (!usersByDevice.has(audit.deviceKey)) usersByDevice.set(audit.deviceKey, new Set());
+        usersByDevice.get(audit.deviceKey).add(audit.userId);
+      }
+      for (const audit of assignmentAudits) {
+        const scope = audit.moduleId?.name || audit.slotKey || 'Active lab';
+        const deviceLabel = audit.deviceSource === 'browser'
+          ? `Browser device …${audit.deviceId.slice(-8)}`
+          : `Network/browser signature (${audit.ipAddress})`;
+        const userDevices = devicesByUser.get(audit.userId);
+        const deviceUsers = usersByDevice.get(audit.deviceKey);
+        if (!signalsByUser.has(audit.userId)) signalsByUser.set(audit.userId, { multiDeviceScopes: [], sharedDeviceScopes: [] });
+        const signals = signalsByUser.get(audit.userId);
+        if (userDevices.size > 1 && !signals.multiDeviceScopes.some((item) => item.scope === scope)) {
+          signals.multiDeviceScopes.push({ scope, deviceCount: userDevices.size });
+        }
+        if (deviceUsers.size > 1 && !signals.sharedDeviceScopes.some((item) => item.scope === scope && item.deviceLabel === deviceLabel)) {
+          signals.sharedDeviceScopes.push({ scope, deviceLabel, userIds: [...deviceUsers].sort() });
+        }
+      }
+    }
+
     const students = connections.map((connection) => ({
       connectionId: connection.sessionId,
       userId: connection.userId,
@@ -212,8 +265,19 @@ router.get('/active-students', requireAuth, authorize('faculty', 'admin'), async
       connectedAt: connection.createdAt,
       lastSeenAt: connection.lastSeenAt,
       expiresAt: connection.expiresAt,
+      malpractice: signalsByUser.get(connection.userId) || { multiDeviceScopes: [], sharedDeviceScopes: [] },
     }));
-    res.json({ students });
+    const flaggedStudents = students.filter((student) => (
+      student.malpractice.multiDeviceScopes.length || student.malpractice.sharedDeviceScopes.length
+    ));
+    res.json({
+      students,
+      integritySummary: {
+        trackedAssignments: assignmentIds.length,
+        flaggedStudents: flaggedStudents.length,
+        sharedDeviceStudents: flaggedStudents.filter((student) => student.malpractice.sharedDeviceScopes.length).length,
+      },
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

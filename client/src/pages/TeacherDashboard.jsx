@@ -8,7 +8,7 @@ import {
   PaperAirplaneIcon,
   ChartBarIcon,
   CubeIcon,
-  ArrowRightOnRectangleIcon,
+  CircleStackIcon,
   ClipboardDocumentListIcon,
   UsersIcon,
   ClockIcon,
@@ -79,6 +79,14 @@ const actions = [
     to: '/teacher-docker',
     color: 'from-slate-500 to-gray-700',
   },
+  {
+    key: 'mongodb-manager',
+    title: 'MongoDB Manager',
+    description: 'Browse, edit, delete, add, and export lab database records.',
+    icon: CircleStackIcon,
+    to: '/teacher-mongodb',
+    color: 'from-emerald-500 to-green-700',
+  },
 ];
 
 export default function TeacherDashboard() {
@@ -128,18 +136,6 @@ export default function TeacherDashboard() {
               </button>
             ))}
 
-            <button
-              onClick={handleLogout}
-              className="group text-left bg-white rounded-2xl border border-red-200 shadow-sm hover:shadow-lg transition-all duration-300 p-6 flex flex-col"
-            >
-              <div className="p-3 mb-4 rounded-xl bg-gradient-to-br from-red-500 to-rose-600 w-fit shadow-md">
-                <ArrowRightOnRectangleIcon className="w-6 h-6 text-white" />
-              </div>
-              <h3 className="text-base font-semibold text-gray-900 group-hover:text-red-600 transition-colors">
-                Logout
-              </h3>
-              <p className="text-sm text-gray-500 mt-1">End your teacher session.</p>
-            </button>
           </div>
         </div>
       </div>

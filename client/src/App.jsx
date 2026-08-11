@@ -5,6 +5,7 @@ import TeacherLogin from './pages/TeacherLogin';
 import TeacherDashboard from './pages/TeacherDashboard';
 import TeacherPerformance from './pages/TeacherPerformance';
 import TeacherDocker from './pages/TeacherDocker';
+import TeacherMongoDB from './pages/TeacherMongoDB';
 import TeacherBatches from './pages/TeacherBatches';
 import StudentDashboard from './pages/StudentDashboard';
 import TeacherTimeControl from './pages/TeacherTimeControl';
@@ -29,6 +30,7 @@ function App() {
             <Route path="/teacher-upload" element={<TeacherUpload />} />
             <Route path="/teacher-performance" element={<TeacherPerformance />} />
             <Route path="/teacher-docker" element={<TeacherDocker />} />
+            <Route path="/teacher-mongodb" element={<TeacherMongoDB />} />
             <Route path="/teacher-batches" element={<TeacherBatches />} />
             <Route path="/teacher-time" element={<TeacherTimeControl />} />
             <Route path="/teacher-active-students" element={<TeacherActiveStudents />} />

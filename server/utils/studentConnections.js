@@ -1,5 +1,7 @@
 import crypto from 'crypto';
 import StudentConnection from '../models/StudentConnection.js';
+import LabAssignment from '../models/LabAssignment.js';
+import StudentLoginAudit from '../models/StudentLoginAudit.js';
 
 // A connection is retained long enough to tolerate short Wi-Fi interruptions
 // and accidental refreshes, but is automatically released after a browser/tab
@@ -46,7 +48,7 @@ export async function createStudentConnection(req, student) {
   }
 
   const now = new Date();
-  return StudentConnection.create({
+  const connection = await StudentConnection.create({
     user: student._id,
     userId: student.user_id,
     sessionId: crypto.randomUUID(),
@@ -56,6 +58,51 @@ export async function createStudentConnection(req, student) {
     lastSeenAt: now,
     expiresAt: connectionExpiry(),
   });
+
+  try {
+    await recordActiveAssignmentLogin(student, connection);
+  } catch (err) {
+    // Login availability is more important than a non-enforcement audit log;
+    // keep the connection valid and surface the server error for maintenance.
+    console.error('[integrity] could not record student login audit:', err);
+  }
+  return connection;
+}
+
+async function recordActiveAssignmentLogin(student, connection) {
+  const now = new Date();
+  const assignments = await LabAssignment.find({
+    status: 'active',
+    activeModule: { $ne: null },
+    $and: [
+      { $or: [{ startsAt: null }, { startsAt: { $lte: now } }] },
+      { $or: [{ endsAt: null }, { endsAt: { $gt: now } }] },
+      { $or: [{ targetBatch: { $in: [null, ''] } }, { targetBatch: student.batch || '' }] },
+    ],
+  }).select('_id activeModule slotKey').lean();
+
+  if (!assignments.length) return;
+
+  const deviceSource = connection.deviceId ? 'browser' : 'network-fallback';
+  const deviceKey = connection.deviceId
+    ? `browser:${connection.deviceId}`
+    : `network:${connection.ipAddress}|${connection.userAgent}`;
+
+  await StudentLoginAudit.insertMany(assignments.map((assignment) => ({
+    assignmentId: assignment._id,
+    moduleId: assignment.activeModule,
+    slotKey: assignment.slotKey || '',
+    userId: student.user_id,
+    studentName: student.name || student.user_id,
+    batch: student.batch || '',
+    connectionId: connection.sessionId,
+    deviceId: connection.deviceId || '',
+    deviceKey,
+    deviceSource,
+    ipAddress: connection.ipAddress,
+    userAgent: connection.userAgent,
+    loggedInAt: connection.createdAt || now,
+  })));
 }
 
 export async function touchStudentConnection(sessionId) {
