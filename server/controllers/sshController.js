@@ -794,6 +794,7 @@ export async function runAndEvaluate({
   const question = await Question.findById(questionId).lean();
   if (!question) throw new Error(`Question ${questionId} not found`);
 
+  const questionKey = question.questionKey;
   const inputContent = question.input || '';
   const niceScript = question.niceScript;
   const testcasesJson = question.testcasesFile;
