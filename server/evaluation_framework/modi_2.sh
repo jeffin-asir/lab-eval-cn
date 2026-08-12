@@ -127,7 +127,7 @@ do
 	read -r -a seg <<< "$single_hex_line"
  
 	hcount=0
-	for hex_word in "${seq[@]}";
+	for hex_word in "${seg[@]}";
 	do
 		if [[ $hcount -eq 0  ]];then
 			 ((hcount++))
