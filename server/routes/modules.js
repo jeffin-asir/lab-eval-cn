@@ -81,15 +81,25 @@ router.post('/', requireAuth, authorize('faculty', 'admin'), async (req, res) =>
       return res.status(400).json({ error: 'At least one question must be selected.' });
     }
 
+    let moduleDate;
     try {
+      // Dates received in JSON are strings; normalize before passing them to
+      // buildSlotKey, which reads Date methods such as getFullYear().
+      moduleDate = req.body.date ? new Date(req.body.date) : new Date();
+      if (Number.isNaN(moduleDate.getTime())) {
+        throw new Error('Invalid module date. Use YYYY-MM-DD.');
+      }
       const startTime = parseTimeHHMM(req.body.startTime)?.display || '09:00';
       const endTime = parseTimeHHMM(req.body.endTime)?.display || '12:00';
-      buildSlotKey(req.body.date || new Date(), startTime, endTime, '000000000000000000000000');
+      buildSlotKey(moduleDate, startTime, endTime, '000000000000000000000000');
     } catch (timeErr) {
       return res.status(400).json({ error: timeErr.message });
     }
 
-    const moduleData = buildModulePayload(req.body, questions);
+    const moduleData = {
+      ...buildModulePayload(req.body, questions),
+      date: moduleDate,
+    };
     const newModule = await CNModule.create(moduleData);
     res.status(201).json(newModule);
   } catch (err) {
