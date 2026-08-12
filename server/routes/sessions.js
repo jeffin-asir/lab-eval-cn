@@ -5,6 +5,8 @@ import { CNModule } from '../models/Module.js';
 import User from '../models/User.js';
 import Course from '../models/Course.js';
 import LabAssignment from '../models/LabAssignment.js';
+import TestAttempt from '../models/TestAttempt.js';
+import EvaluationRun from '../models/EvaluationRun.js';
 import { protect, authorize } from '../middleware/auth.js';
 import { requireAuth } from '../middleware/auth.js';
 import { ensureSessionContainer, stopSessionContainer } from '../controllers/sshController.js';
