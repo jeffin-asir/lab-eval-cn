@@ -1,5 +1,8 @@
 import Timer from './Timer';
 import { Link } from 'react-router-dom';
+import { useCallback, useEffect, useState } from 'react';
+import axios from 'axios';
+import { API_BASE } from '../config';
 import { 
   QuestionMarkCircleIcon, 
   BeakerIcon,
@@ -17,6 +20,8 @@ export default function Header({
   title, 
   timeLimit, 
   totalTimeLimit,
+  endsAt,
+  serverTime,
   onTimeUp, 
   showQuestion = true, 
   onToggleQuestion,
@@ -29,6 +34,45 @@ export default function Header({
   onExitLab,
   studentId
 }) {
+  const [pendingRequests, setPendingRequests] = useState({ passwordResets: [], sessionDisconnects: [] });
+  const [notificationsOpen, setNotificationsOpen] = useState(true);
+  const [notificationError, setNotificationError] = useState('');
+
+  const loadPendingRequests = useCallback(async () => {
+    if (!isTeacherPage) return;
+    try {
+      const response = await axios.get(`${API_BASE}/api/batches/pending-requests`);
+      setPendingRequests(response.data || { passwordResets: [], sessionDisconnects: [] });
+      setNotificationError('');
+    } catch {
+      // A notification failure should never prevent the page itself loading.
+    }
+  }, [isTeacherPage]);
+
+  useEffect(() => {
+    loadPendingRequests();
+    if (!isTeacherPage) return undefined;
+    const timer = window.setInterval(loadPendingRequests, 15_000);
+    return () => window.clearInterval(timer);
+  }, [isTeacherPage, loadPendingRequests]);
+
+  const approveRequest = async (kind, id) => {
+    try {
+      const endpoint = kind === 'password'
+        ? `/api/batches/password-reset-requests/${id}`
+        : `/api/batches/session-disconnect-requests/${id}`;
+      await axios.patch(`${API_BASE}${endpoint}`, { status: 'approved' });
+      await loadPendingRequests();
+    } catch (error) {
+      setNotificationError(error.response?.data?.error || 'Could not approve the request.');
+    }
+  };
+
+  const notifications = [
+    ...pendingRequests.passwordResets.map((request) => ({ ...request, kind: 'password', title: 'Password change request' })),
+    ...pendingRequests.sessionDisconnects.map((request) => ({ ...request, kind: 'disconnect', title: 'Session disconnect request' })),
+  ];
+
   const handleLogoutClick = () => {
     if (window.confirm('Are you sure you want to log out?')) {
       onLogout();
@@ -153,7 +197,13 @@ export default function Header({
               <div className="p-1 bg-gradient-to-br from-orange-400 to-red-500 rounded-lg">
                 <ClockIcon className="w-5 h-5 text-white" />
               </div>
-              <Timer duration={timeLimit} totalDuration={totalTimeLimit} onExpire={onTimeUp} />
+              <Timer
+                duration={timeLimit}
+                totalDuration={totalTimeLimit}
+                endsAt={endsAt}
+                serverTime={serverTime}
+                onExpire={onTimeUp}
+              />
             </div>
           )}
           {!isTeacherPage && onExitLab && (
@@ -167,6 +217,23 @@ export default function Header({
           )}
         </div>
       </div>
+      {isTeacherPage && notifications.length > 0 && notificationsOpen && (
+        <aside className="fixed left-4 top-20 z-50 w-[min(24rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-amber-200 bg-white shadow-xl" role="status">
+          <div className="flex items-center justify-between border-b border-amber-100 bg-amber-50 px-4 py-3">
+            <div><p className="text-sm font-semibold text-amber-900">Teacher notifications</p><p className="text-xs text-amber-700">{notifications.length} request{notifications.length === 1 ? '' : 's'} awaiting review</p></div>
+            <button type="button" onClick={() => setNotificationsOpen(false)} className="text-xs font-medium text-amber-800 hover:underline">Dismiss</button>
+          </div>
+          <div className="max-h-80 divide-y divide-gray-100 overflow-y-auto">
+            {notifications.map((request) => <div key={`${request.kind}-${request._id}`} className="p-3 text-sm">
+              <p className="font-medium text-gray-900">{request.title}</p>
+              <p className="text-gray-600">{request.studentName || request.userId} <span className="text-xs text-gray-400">({request.userId})</span></p>
+              <p className="text-xs text-gray-500">{new Date(request.createdAt).toLocaleString()}</p>
+              <div className="mt-2 flex items-center gap-3"><button type="button" onClick={() => approveRequest(request.kind, request._id)} className="rounded-md bg-green-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-green-700">Approve</button><Link to="/teacher-batches" className="text-xs font-medium text-indigo-700 hover:underline">Review later</Link></div>
+            </div>)}
+          </div>
+          {notificationError && <p className="border-t border-red-100 bg-red-50 px-3 py-2 text-xs text-red-700">{notificationError}</p>}
+        </aside>
+      )}
     </header>
   );
 }

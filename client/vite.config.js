@@ -26,6 +26,22 @@ export default defineConfig({
         );
       },
     },
+    {
+      // Monaco 0.52.2 references this map, but does not ship it. Removing the
+      // comment prevents Vite from logging an ENOENT on every dev-server start.
+      name: 'strip-missing-monaco-marked-source-map',
+      enforce: 'pre',
+      transform(code, id) {
+        if (!id.includes('/monaco-editor/esm/vs/base/common/marked/marked.js')) {
+          return null;
+        }
+
+        return {
+          code: code.replace(/\n?\/\/# sourceMappingURL=marked\.umd\.js\.map\s*$/, '\n'),
+          map: null,
+        };
+      },
+    },
   ],
   server: {
     host: '0.0.0.0',

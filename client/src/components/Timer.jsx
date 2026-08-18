@@ -1,23 +1,35 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
-export default function Timer({ duration, totalDuration, onExpire }) {
+// `endsAt` and `serverTime` are returned together by the API.  We use the
+// browser's monotonic clock only to advance that server-time snapshot, so
+// changing the computer's date/time cannot change when the test expires.
+export default function Timer({ duration, totalDuration, endsAt, serverTime, onExpire }) {
   const [timeLeft, setTimeLeft] = useState(duration);
+  const expiredRef = useRef(false);
 
   useEffect(() => {
-    setTimeLeft(duration);
-  }, [duration]);
+    expiredRef.current = false;
+    const deadline = endsAt ? new Date(endsAt).getTime() : null;
+    const serverNow = serverTime ? new Date(serverTime).getTime() : null;
+    const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
+
+    const getRemainingSeconds = () => {
+      if (!Number.isFinite(deadline) || !Number.isFinite(serverNow)) return Math.max(0, duration || 0);
+      const currentTick = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      const currentServerTime = serverNow + (currentTick - startedAt);
+      return Math.max(0, Math.ceil((deadline - currentServerTime) / 1000));
+    };
+
+    setTimeLeft(getRemainingSeconds());
+    const timer = window.setInterval(() => setTimeLeft(getRemainingSeconds()), 250);
+    return () => window.clearInterval(timer);
+  }, [duration, endsAt, serverTime]);
 
   useEffect(() => {
-    if (timeLeft <= 0) {
+    if (timeLeft <= 0 && !expiredRef.current) {
+      expiredRef.current = true;
       onExpire?.();
-      return;
     }
-
-    const timer = setInterval(() => {
-      setTimeLeft(prev => Math.max(0, prev - 1));
-    }, 1000);
-
-    return () => clearInterval(timer);
   }, [timeLeft, onExpire]);
 
   const formatTime = (seconds) => {

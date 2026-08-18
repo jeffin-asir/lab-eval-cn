@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import Header from '../components/Header';
+import TeacherContainerTerminal from '../components/TeacherContainerTerminal';
 import { API_BASE } from '../config';
 import {
   ArrowPathIcon,
@@ -10,6 +11,9 @@ import {
   ServerStackIcon,
   CircleStackIcon,
   TrashIcon,
+  PlayIcon,
+  StopIcon,
+  XMarkIcon,
 } from '@heroicons/react/24/outline';
 
 function StateBadge({ state }) {
@@ -38,6 +42,12 @@ export default function TeacherDocker() {
   const [containers, setContainers] = useState([]);
   const [containersLoading, setContainersLoading] = useState(false);
   const [containerSearch, setContainerSearch] = useState('');
+  const [containerScope, setContainerScope] = useState('all');
+  const [selectedContainer, setSelectedContainer] = useState(null);
+  const [containerDetails, setContainerDetails] = useState(null);
+  const [detailsLoading, setDetailsLoading] = useState(false);
+  const [shellContainer, setShellContainer] = useState(null);
+  const [shellUser, setShellUser] = useState('networklab');
 
   const [volumes, setVolumes] = useState([]);
   const [volumesLoading, setVolumesLoading] = useState(false);
@@ -112,14 +122,21 @@ export default function TeacherDocker() {
 
   const filteredContainers = useMemo(() => {
     const term = containerSearch.trim().toLowerCase();
-    if (!term) return containers;
-    return containers.filter((c) => (
+    return containers.filter((c) => {
+      const scopeMatches = containerScope === 'all'
+        || (containerScope === 'free-coding' && c.isFreeCoding)
+        || (containerScope.startsWith('session:') && c.sessionId === containerScope.slice('session:'.length));
+      const searchMatches = !term || (
       c.name?.toLowerCase().includes(term)
       || c.image?.toLowerCase().includes(term)
       || c.state?.toLowerCase().includes(term)
       || c.shortId?.toLowerCase().includes(term)
-    ));
-  }, [containers, containerSearch]);
+      );
+      return scopeMatches && searchMatches;
+    });
+  }, [containers, containerSearch, containerScope]);
+
+  const sessionScopes = useMemo(() => [...new Set(containers.filter((container) => container.isLabContainer && !container.isFreeCoding).map((container) => container.sessionId).filter(Boolean))].sort(), [containers]);
 
   const filteredVolumes = useMemo(() => {
     const term = volumeSearch.trim().toLowerCase();
@@ -151,19 +168,41 @@ export default function TeacherDocker() {
     }
   };
 
-  const pruneLabContainers = async () => {
-    if (!confirm('Delete all stopped lab containers? Running containers will be kept.')) return;
-
+  const updateContainerState = async (container, action) => {
     setContainersLoading(true);
     try {
-      const res = await axios.post(`${API_BASE}/api/docker/prune-lab-containers`);
-      setMessage(`Removed ${res.data.removedCount || 0} stopped lab container(s).`);
+      await axios.post(`${API_BASE}/api/docker/container/${container.id}/${action}`);
+      setMessage(`${container.name} ${action === 'start' ? 'started' : 'stopped'}.`);
       await loadContainers();
+      if (selectedContainer?.id === container.id) await openContainerDetails(container);
     } catch (err) {
-      setMessage(err.response?.data?.error || 'Failed to prune lab containers.');
-    } finally {
-      setContainersLoading(false);
-    }
+      setMessage(err.response?.data?.error || `Failed to ${action} container.`);
+    } finally { setContainersLoading(false); }
+  };
+
+  const bulkContainerAction = async (action) => {
+    const filter = containerScope === 'free-coding' ? { kind: 'free-coding' }
+      : containerScope.startsWith('session:') ? { kind: 'session', sessionId: containerScope.slice('session:'.length) }
+        : { kind: 'all-lab' };
+    const label = containerScope === 'all' ? 'all lab containers' : containerScope === 'free-coding' ? 'all Free Coding containers' : `all containers in ${filter.sessionId}`;
+    if (!confirm(`${action === 'delete' ? 'Delete' : 'Stop'} ${label}?`)) return;
+    setContainersLoading(true);
+    try {
+      const response = await axios.post(`${API_BASE}/api/docker/containers/bulk/${action}`, { filter });
+      setMessage(`${action === 'delete' ? 'Deleted' : 'Stopped'} ${response.data.completed?.length || 0} container(s).`);
+      setSelectedContainer(null); setContainerDetails(null);
+      await loadContainers();
+    } catch (err) { setMessage(err.response?.data?.error || `Failed to ${action} filtered containers.`); }
+    finally { setContainersLoading(false); }
+  };
+
+  const openContainerDetails = async (container) => {
+    setSelectedContainer(container); setContainerDetails(null); setDetailsLoading(true);
+    try {
+      const response = await axios.get(`${API_BASE}/api/docker/containers/${container.id}/details`);
+      setContainerDetails(response.data);
+    } catch (err) { setMessage(err.response?.data?.error || 'Failed to load container details.'); }
+    finally { setDetailsLoading(false); }
   };
 
   const removeVolume = async (volume) => {
@@ -279,6 +318,11 @@ export default function TeacherDocker() {
                     <h2 className="text-base font-semibold text-gray-900">Containers</h2>
                   </div>
                   <div className="flex flex-wrap gap-2 items-center">
+                    <select value={containerScope} onChange={(e) => setContainerScope(e.target.value)} className="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700">
+                      <option value="all">All lab containers</option>
+                      <option value="free-coding">Free Coding only</option>
+                      {sessionScopes.map((sessionId) => <option key={sessionId} value={`session:${sessionId}`}>{sessionId}</option>)}
+                    </select>
                     <div className="relative">
                       <MagnifyingGlassIcon className="w-4 h-4 text-gray-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
                       <input
@@ -298,15 +342,30 @@ export default function TeacherDocker() {
                       Refresh
                     </button>
                     <button
-                      onClick={pruneLabContainers}
-                      disabled={containersLoading || stats.stoppedLab === 0}
+                      onClick={() => bulkContainerAction('stop')}
+                      disabled={containersLoading || filteredContainers.filter((container) => container.state === 'running').length === 0}
+                      className="inline-flex items-center gap-2 px-3 py-2 rounded-md border border-amber-300 bg-amber-50 text-sm text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+                    >
+                      <StopIcon className="w-4 h-4" /> Stop filtered
+                    </button>
+                    <button
+                      onClick={() => bulkContainerAction('delete')}
+                      disabled={containersLoading || filteredContainers.length === 0}
                       className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-red-600 text-sm text-white hover:bg-red-700 disabled:opacity-50"
                     >
                       <TrashIcon className="w-4 h-4" />
-                      Delete Stopped Lab
+                      Delete filtered
                     </button>
                   </div>
                 </div>
+
+                {selectedContainer && <div className="border-b border-gray-200 bg-slate-50 p-4">
+                  <div className="mb-3 flex items-center justify-between"><div><h3 className="font-semibold text-gray-900">{selectedContainer.name}</h3><p className="text-xs text-gray-500">Container dashboard and teacher troubleshooting shell</p></div><button type="button" onClick={() => { setSelectedContainer(null); setContainerDetails(null); }} className="rounded p-1 text-gray-500 hover:bg-gray-200"><XMarkIcon className="h-5 w-5" /></button></div>
+                  {detailsLoading ? <p className="text-sm text-gray-500">Loading container details…</p> : containerDetails && <div className="grid gap-4 lg:grid-cols-2">
+                    <div className="grid grid-cols-2 gap-2 text-sm"><div className="rounded border bg-white p-3"><p className="text-xs text-gray-500">CPU</p><p className="font-semibold">{containerDetails.stats ? `${containerDetails.stats.cpuPercent.toFixed(1)}%` : 'Stopped'}</p></div><div className="rounded border bg-white p-3"><p className="text-xs text-gray-500">Memory</p><p className="font-semibold">{containerDetails.stats ? `${formatBytes(containerDetails.stats.memoryUsage)} / ${formatBytes(containerDetails.stats.memoryLimit)}` : '—'}</p></div><div className="rounded border bg-white p-3"><p className="text-xs text-gray-500">Network received</p><p className="font-semibold">{formatBytes(containerDetails.stats?.networkRx)}</p></div><div className="rounded border bg-white p-3"><p className="text-xs text-gray-500">Network sent</p><p className="font-semibold">{formatBytes(containerDetails.stats?.networkTx)}</p></div><div className="col-span-2 rounded border bg-white p-3 text-xs text-gray-600">Mounts: {containerDetails.mounts.length ? containerDetails.mounts.map((mount) => `${mount.Source} → ${mount.Destination}`).join(', ') : 'None'}<br />Limits: {formatBytes(containerDetails.config.memoryLimit)} memory · {(containerDetails.config.nanoCpus / 1e9).toFixed(2)} CPU · {containerDetails.config.pidsLimit || 'unlimited'} PIDs</div></div>
+                    <div className="flex flex-col justify-center rounded border border-indigo-100 bg-indigo-50 p-5"><p className="font-medium text-indigo-950">Interactive Bash shell</p><p className="mt-1 text-sm text-indigo-800">Opens as <b>networklab</b>, the evaluator account. Root access is available inside the terminal dialog when needed.</p><button type="button" onClick={() => { setShellUser('networklab'); setShellContainer(selectedContainer); }} disabled={!containerDetails.stats} className="mt-4 w-fit rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50">Open Bash terminal</button></div>
+                  </div>}
+                </div>}
 
                 <div className="overflow-x-auto">
                   <table className="min-w-full text-sm">
@@ -317,7 +376,7 @@ export default function TeacherDocker() {
                         <th className="text-left px-4 py-3">State</th>
                         <th className="text-left px-4 py-3">Ports</th>
                         <th className="text-left px-4 py-3">Created</th>
-                        <th className="text-left px-4 py-3">Action</th>
+                        <th className="text-left px-4 py-3">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-200">
@@ -345,14 +404,7 @@ export default function TeacherDocker() {
                             {container.created ? new Date(container.created).toLocaleString() : '-'}
                           </td>
                           <td className="px-4 py-3">
-                            <button
-                              onClick={() => removeContainer(container)}
-                              disabled={containersLoading}
-                              className="inline-flex items-center gap-1 text-red-700 hover:text-red-900 disabled:opacity-50"
-                            >
-                              <TrashIcon className="w-4 h-4" />
-                              Delete
-                            </button>
+                            <div className="flex flex-wrap gap-x-3 gap-y-1"><button onClick={() => openContainerDetails(container)} className="text-indigo-700 hover:text-indigo-900">Details</button>{container.state === 'running' ? <button onClick={() => updateContainerState(container, 'stop')} disabled={containersLoading} className="inline-flex items-center gap-1 text-amber-700 hover:text-amber-900 disabled:opacity-50"><StopIcon className="w-4 h-4" /> Stop</button> : <button onClick={() => updateContainerState(container, 'start')} disabled={containersLoading} className="inline-flex items-center gap-1 text-green-700 hover:text-green-900 disabled:opacity-50"><PlayIcon className="w-4 h-4" /> Start</button>}<button onClick={() => removeContainer(container)} disabled={containersLoading} className="inline-flex items-center gap-1 text-red-700 hover:text-red-900 disabled:opacity-50"><TrashIcon className="w-4 h-4" /> Delete</button></div>
                           </td>
                         </tr>
                       ))}
@@ -508,6 +560,7 @@ export default function TeacherDocker() {
           )}
         </div>
       </div>
+      {shellContainer && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4" role="dialog" aria-modal="true" aria-label="Container Bash terminal"><div className="flex h-[min(42rem,calc(100vh-3rem))] w-full max-w-5xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl"><div className="flex items-center justify-between border-b px-4 py-3"><div><h2 className="font-semibold text-gray-900">Bash terminal · {shellContainer.name}</h2><p className="text-xs text-gray-500">Teacher shell · signed in as {shellUser}</p></div><div className="flex items-center gap-2"><div className="rounded-md border border-gray-200 p-0.5 text-xs"><button type="button" onClick={() => setShellUser('networklab')} className={`rounded px-2 py-1 ${shellUser === 'networklab' ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-100'}`}>networklab</button><button type="button" onClick={() => setShellUser('root')} className={`rounded px-2 py-1 ${shellUser === 'root' ? 'bg-red-600 text-white' : 'text-gray-600 hover:bg-gray-100'}`}>Root</button></div><button type="button" onClick={() => setShellContainer(null)} className="rounded p-1 text-gray-500 hover:bg-gray-100"><XMarkIcon className="h-5 w-5" /></button></div></div><div className="min-h-0 flex-1 p-3"><TeacherContainerTerminal containerId={shellContainer.id} shellUser={shellUser} /></div></div></div>}
     </div>
   );
 }

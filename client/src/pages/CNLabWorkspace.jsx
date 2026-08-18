@@ -1816,12 +1816,13 @@ export default function CNLabWorkspace() {
 
 
   const question = questions && questions.length > 0 ? questions[activeQuestionIdx] : undefined;
-  const remainingSeconds = attemptInfo?.remainingSeconds ?? (
-    moduleInfo?.endsAt
-      ? Math.max(0, Math.floor((new Date(moduleInfo.endsAt).getTime() - Date.now()) / 1000))
-      : 3600
-  );
+  // Do not derive a deadline from the browser clock.  The timer is shown
+  // only after the API has supplied an attempt, its server-time snapshot,
+  // and the authoritative end time.
+  const remainingSeconds = attemptInfo?.remainingSeconds ?? 0;
   const totalSeconds = attemptInfo?.totalSeconds ?? remainingSeconds;
+  const attemptEndsAt = attemptInfo?.attempt?.endsAt;
+  const attemptServerTime = attemptInfo?.serverTime;
 
 
   // Keep window.questions and window.activeQuestionIdx in sync for evaluation
@@ -1912,8 +1913,10 @@ export default function CNLabWorkspace() {
         <Header
           title={question ? question.title : 'No questions available'}
           onTimeUp={handleTimeUp}
-          timeLimit={isFreeCoding ? null : remainingSeconds}
+          timeLimit={isFreeCoding || !attemptInfo ? null : remainingSeconds}
           totalTimeLimit={isFreeCoding ? null : totalSeconds}
+          endsAt={isFreeCoding ? null : attemptEndsAt}
+          serverTime={attemptServerTime}
           onExitLab={() => handleExitWorkspace()}
           studentId={getCurrentUser()}
         />
@@ -1997,8 +2000,10 @@ export default function CNLabWorkspace() {
       <Header
         title={moduleInfo ? moduleInfo.name : (question ? question.title : 'No questions available')}
         onTimeUp={handleTimeUp}
-        timeLimit={isFreeCoding ? null : remainingSeconds}
+        timeLimit={isFreeCoding || !attemptInfo ? null : remainingSeconds}
         totalTimeLimit={isFreeCoding ? null : totalSeconds}
+        endsAt={isFreeCoding ? null : attemptEndsAt}
+        serverTime={attemptServerTime}
         showQuestion={showQuestion}
         onToggleQuestion={() => setShowQuestion(!showQuestion)}
         moduleInfo={moduleInfo}

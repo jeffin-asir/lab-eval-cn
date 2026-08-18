@@ -6,6 +6,7 @@ import { authorize, clearAuthCookie, getUserFromRequest, requireAuth, setAuthCoo
 import StudentConnection from '../models/StudentConnection.js';
 import StudentLoginAudit from '../models/StudentLoginAudit.js';
 import LabAssignment from '../models/LabAssignment.js';
+import Submission from '../models/Submission.js';
 import SessionDisconnectRequest from '../models/SessionDisconnectRequest.js';
 import { activeConnectionFilter, createStudentConnection, revokeStudentConnection } from '../utils/studentConnections.js';
 
@@ -205,7 +206,7 @@ router.get('/active-students', requireAuth, authorize('faculty', 'admin'), async
     const now = new Date();
     const [connections, liveAssignments] = await Promise.all([
       StudentConnection.find({ revokedAt: null, expiresAt: { $gt: now } })
-        .populate('user', 'name batch roll_number').sort({ lastSeenAt: -1 }).lean(),
+        .populate('user', 'name batch roll_number').lean(),
       LabAssignment.find({
         status: 'active',
         activeModule: { $ne: null },
@@ -221,7 +222,14 @@ router.get('/active-students', requireAuth, authorize('faculty', 'admin'), async
         .populate('moduleId', 'name').lean()
       : [];
 
+    // A device is attributed to the first account that used it in an
+    // assignment.  A later account on that device is a password-sharing
+    // signal for that account; the device owner gets the multiple-login
+    // signal.  This deliberately avoids showing the identical alert on both
+    // students' rows.
     const signalsByUser = new Map();
+    const passwordSharing = [];
+    const multipleLogin = [];
     const auditsByAssignment = new Map();
     for (const audit of audits) {
       const key = audit.assignmentId.toString();
@@ -229,31 +237,103 @@ router.get('/active-students', requireAuth, authorize('faculty', 'admin'), async
       auditsByAssignment.get(key).push(audit);
     }
     for (const assignmentAudits of auditsByAssignment.values()) {
-      const devicesByUser = new Map();
       const usersByDevice = new Map();
       for (const audit of assignmentAudits) {
-        if (!devicesByUser.has(audit.userId)) devicesByUser.set(audit.userId, new Set());
-        devicesByUser.get(audit.userId).add(audit.deviceKey);
-        if (!usersByDevice.has(audit.deviceKey)) usersByDevice.set(audit.deviceKey, new Set());
-        usersByDevice.get(audit.deviceKey).add(audit.userId);
+        if (!usersByDevice.has(audit.deviceKey)) usersByDevice.set(audit.deviceKey, []);
+        usersByDevice.get(audit.deviceKey).push(audit);
       }
-      for (const audit of assignmentAudits) {
-        const scope = audit.moduleId?.name || audit.slotKey || 'Active lab';
-        const deviceLabel = audit.deviceSource === 'browser'
-          ? `Browser device …${audit.deviceId.slice(-8)}`
-          : `Network/browser signature (${audit.ipAddress})`;
-        const userDevices = devicesByUser.get(audit.userId);
-        const deviceUsers = usersByDevice.get(audit.deviceKey);
-        if (!signalsByUser.has(audit.userId)) signalsByUser.set(audit.userId, { multiDeviceScopes: [], sharedDeviceScopes: [] });
-        const signals = signalsByUser.get(audit.userId);
-        if (userDevices.size > 1 && !signals.multiDeviceScopes.some((item) => item.scope === scope)) {
-          signals.multiDeviceScopes.push({ scope, deviceCount: userDevices.size });
+      for (const deviceAudits of usersByDevice.values()) {
+        const firstAuditForUser = new Map();
+        for (const audit of deviceAudits.sort((a, b) => new Date(a.loggedInAt) - new Date(b.loggedInAt))) {
+          if (!firstAuditForUser.has(audit.userId)) firstAuditForUser.set(audit.userId, audit);
         }
-        if (deviceUsers.size > 1 && !signals.sharedDeviceScopes.some((item) => item.scope === scope && item.deviceLabel === deviceLabel)) {
-          signals.sharedDeviceScopes.push({ scope, deviceLabel, userIds: [...deviceUsers].sort() });
+        if (firstAuditForUser.size < 2) continue;
+
+        const [ownerUserId, ownerAudit] = firstAuditForUser.entries().next().value;
+        const scope = ownerAudit.moduleId?.name || ownerAudit.slotKey || 'Active lab';
+        const deviceLabel = ownerAudit.deviceSource === 'browser'
+          ? `Browser device …${ownerAudit.deviceId.slice(-8)}`
+          : `Network/browser signature (${ownerAudit.ipAddress})`;
+        const otherAudits = [...firstAuditForUser.entries()]
+          .filter(([userId]) => userId !== ownerUserId)
+          .map(([, audit]) => audit);
+        const counterpartIds = otherAudits.map((audit) => audit.userId).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+        const multiEvent = {
+          type: 'multiple-login', userId: ownerUserId, studentName: ownerAudit.studentName,
+          counterpartIds, scope, deviceLabel, occurredAt: otherAudits[0].loggedInAt,
+          moduleId: ownerAudit.moduleId?._id?.toString() || ownerAudit.moduleId?.toString() || '',
+        };
+        multipleLogin.push(multiEvent);
+        if (!signalsByUser.has(ownerUserId)) signalsByUser.set(ownerUserId, { passwordSharing: [], multipleLogin: [] });
+        signalsByUser.get(ownerUserId).multipleLogin.push(multiEvent);
+
+        for (const audit of otherAudits) {
+          const shareEvent = {
+            type: 'password-sharing', userId: audit.userId, studentName: audit.studentName,
+            counterpartIds: [ownerUserId], scope, deviceLabel, occurredAt: audit.loggedInAt,
+            moduleId: audit.moduleId?._id?.toString() || audit.moduleId?.toString() || '',
+          };
+          passwordSharing.push(shareEvent);
+          if (!signalsByUser.has(audit.userId)) signalsByUser.set(audit.userId, { passwordSharing: [], multipleLogin: [] });
+          signalsByUser.get(audit.userId).passwordSharing.push(shareEvent);
         }
       }
     }
+
+    const allSignals = [...passwordSharing, ...multipleLogin];
+    const earliestReviewAt = allSignals.length
+      ? new Date(Math.min(...allSignals.map((signal) => new Date(signal.occurredAt).getTime())) + (5 * 60 * 1000))
+      : null;
+    const submissionUsers = [...new Set(allSignals.flatMap((signal) => [signal.userId, ...signal.counterpartIds]))];
+    const moduleIds = [...new Set(allSignals.map((signal) => signal.moduleId).filter(Boolean))];
+    const submissions = earliestReviewAt && submissionUsers.length && moduleIds.length
+      ? await Submission.find({
+        userId: { $in: submissionUsers }, moduleId: { $in: moduleIds }, createdAt: { $gte: earliestReviewAt },
+      }).select('userId moduleId questionId passedCount totalTestCases evaluationResults createdAt').sort({ createdAt: 1 }).lean()
+      : [];
+
+    const passedTestcaseSignature = (submission) => {
+      if (!Array.isArray(submission.evaluationResults)) return '';
+      return submission.evaluationResults
+        .filter((result) => result?.passed === true)
+        .map((result) => result.name || result.fullName || result.testcaseId || result.id || '')
+        .filter(Boolean)
+        .sort()
+        .join('|');
+    };
+
+    const addCopyingAssessment = (signal) => {
+      const reviewAt = new Date(new Date(signal.occurredAt).getTime() + (5 * 60 * 1000));
+      if (now < reviewAt) {
+        return { status: 'pending', reviewAt, message: 'Submission comparison becomes available five minutes after the signal.' };
+      }
+      const related = submissions.filter((submission) => (
+        submission.moduleId === signal.moduleId
+        && [signal.userId, ...signal.counterpartIds].includes(submission.userId)
+        && new Date(submission.createdAt) >= reviewAt
+        && Number(submission.passedCount || 0) > 0
+      ));
+      for (let i = 0; i < related.length; i += 1) {
+        for (let j = i + 1; j < related.length; j += 1) {
+          const earlier = related[i];
+          const later = related[j];
+          if (earlier.userId !== later.userId
+            && earlier.questionId === later.questionId
+            && Number(earlier.passedCount) === Number(later.passedCount)
+            && Number(earlier.totalTestCases || 0) === Number(later.totalTestCases || 0)
+            && passedTestcaseSignature(earlier)
+            && passedTestcaseSignature(earlier) === passedTestcaseSignature(later)) {
+            return {
+              status: 'match', sharedBy: earlier.userId, copiedBy: later.userId,
+              questionId: earlier.questionId, passedCount: earlier.passedCount, totalTestCases: earlier.totalTestCases,
+              sharedAt: earlier.createdAt, copiedAt: later.createdAt,
+            };
+          }
+        }
+      }
+      return { status: 'no-match', reviewAt, message: 'No matching later testcase result has been found yet.' };
+    };
+    for (const signal of allSignals) signal.copyingAssessment = addCopyingAssessment(signal);
 
     const students = connections.map((connection) => ({
       connectionId: connection.sessionId,
@@ -265,17 +345,16 @@ router.get('/active-students', requireAuth, authorize('faculty', 'admin'), async
       connectedAt: connection.createdAt,
       lastSeenAt: connection.lastSeenAt,
       expiresAt: connection.expiresAt,
-      malpractice: signalsByUser.get(connection.userId) || { multiDeviceScopes: [], sharedDeviceScopes: [] },
-    }));
-    const flaggedStudents = students.filter((student) => (
-      student.malpractice.multiDeviceScopes.length || student.malpractice.sharedDeviceScopes.length
-    ));
+      integrity: signalsByUser.get(connection.userId) || { passwordSharing: [], multipleLogin: [] },
+    })).sort((a, b) => a.userId.localeCompare(b.userId, undefined, { numeric: true, sensitivity: 'base' }));
+    const flaggedStudents = students.filter((student) => student.integrity.passwordSharing.length || student.integrity.multipleLogin.length);
     res.json({
       students,
       integritySummary: {
         trackedAssignments: assignmentIds.length,
         flaggedStudents: flaggedStudents.length,
-        sharedDeviceStudents: flaggedStudents.filter((student) => student.malpractice.sharedDeviceScopes.length).length,
+        passwordSharing,
+        multipleLogin,
       },
     });
   } catch (err) {

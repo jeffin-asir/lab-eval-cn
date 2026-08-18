@@ -7,14 +7,13 @@
  *
  * Conventions (inferred from the evaluation_framework CSV formats — see
  * evaluationHelper.js parseEvaluatedCsv / parseConnCsv / parseStatusCsv):
- *  - TC1..TCn are every communication-pair verdict across ALL testcase rows
- *    for that question, concatenated in order (not literal "testcase1/2"
- *    names — those are folded into a running sequence).
+ *  - A testcase may contain multiple communication-pair verdicts. They keep
+ *    their testcase label (TC1, TC1, TC1, then TC2...) in the CSV/UI rather
+ *    than being renumbered as separate testcases.
  *  - Persistence shows the raw descriptor from status.csv column 3
  *    (e.g. "non-persistent"), not a Correct/Wrong verdict.
- *  - conn.csv rows are positional: row 0 = Listen check, row 1 = Established
- *    check, row 2 = Closed check. Extra rows beyond 3 are ignored by the
- *    fixed-column CSV export (but preserved in the JSON student report).
+ *  - Connection-state columns are emitted only when the selected class has
+ *    that check in at least one result.
  */
 
 const CONN_LABELS = ['Listen', 'Established', 'Closed'];

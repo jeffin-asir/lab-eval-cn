@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
 import axios from 'axios';
 import { FormSection, FormLabel, ErrorMessage } from '../FormComponents';
@@ -24,6 +25,55 @@ const ModuleForm = ({
   const moduleForm = useForm({
     defaultValues: initialModule,
   });
+  const [serverClock, setServerClock] = useState(null);
+  const [serverClockError, setServerClockError] = useState(false);
+
+  useEffect(() => {
+    let disposed = false;
+    let intervalId;
+
+    const syncServerClock = async () => {
+      try {
+        const response = await axios.get(`${API_BASE}/api/modules/server-time`, {
+          headers: { 'Cache-Control': 'no-cache' },
+        });
+        const serverTime = new Date(response.data.serverTime).getTime();
+        if (!Number.isFinite(serverTime)) throw new Error('Invalid server time');
+
+        if (!disposed) {
+          setServerClock({
+            serverTime,
+            receivedAt: performance.now(),
+            timeZone: response.data.timeZone || 'UTC',
+          });
+          setServerClockError(false);
+        }
+      } catch {
+        if (!disposed) setServerClockError(true);
+      }
+    };
+
+    syncServerClock();
+    intervalId = window.setInterval(syncServerClock, 30_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(intervalId);
+    };
+  }, []);
+
+  const [serverNow, setServerNow] = useState(null);
+  useEffect(() => {
+    if (!serverClock) return undefined;
+
+    const updateClock = () => {
+      // Advance the server snapshot with a monotonic clock: a teacher's
+      // computer time changes cannot alter this displayed server time.
+      setServerNow(serverClock.serverTime + (performance.now() - serverClock.receivedAt));
+    };
+    updateClock();
+    const intervalId = window.setInterval(updateClock, 60_000);
+    return () => window.clearInterval(intervalId);
+  }, [serverClock]);
 
   const watchedStartTime = useWatch({ control: moduleForm.control, name: 'startTime' });
 
@@ -87,6 +137,21 @@ const ModuleForm = ({
   return (
     <form onSubmit={moduleForm.handleSubmit(onSubmit)} className="space-y-6">
       <FormSection title="Module Details">
+        <div className="flex items-center gap-2 rounded-md border border-indigo-100 bg-indigo-50 px-3 py-2 text-xs text-indigo-900">
+          <span className="h-2 w-2 rounded-full bg-green-500" aria-hidden="true" />
+          <span className="font-medium">Server time:</span>
+          <time className="font-mono" dateTime={serverNow ? new Date(serverNow).toISOString() : undefined}>
+            {serverNow
+              ? `${new Date(serverNow).toISOString().slice(11, 16)} UTC · ${new Intl.DateTimeFormat('en-IN', {
+                timeZone: 'Asia/Kolkata',
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: false,
+              }).format(new Date(serverNow))} IST`
+              : 'Syncing…'}
+          </time>
+          {serverClockError && <span className="text-amber-700">Unable to refresh server clock.</span>}
+        </div>
         <div>
           <FormLabel htmlFor="moduleName" required>Module Name</FormLabel>
           <input

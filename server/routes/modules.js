@@ -72,6 +72,18 @@ function buildModulePayload(body, questionIds) {
   };
 }
 
+// Expose the clock used for all module and assignment scheduling.  Teachers
+// can compare their proposed schedule against this instead of their device's
+// clock.
+router.get('/server-time', requireAuth, authorize('faculty', 'admin'), (req, res) => {
+  const now = new Date();
+  res.set('Cache-Control', 'no-store');
+  res.json({
+    serverTime: now.toISOString(),
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+  });
+});
+
 // Create a module - with auth
 router.post('/', requireAuth, authorize('faculty', 'admin'), async (req, res) => {
   try {

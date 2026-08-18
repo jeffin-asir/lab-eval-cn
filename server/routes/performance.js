@@ -43,6 +43,52 @@ router.get('/slots', async (req, res) => {
   }
 });
 
+// Calendar-friendly history of actual lab assignments. A module can be sent
+// to several batches, so assignments sharing module/date/window are folded
+// into one selectable session with its allowed batches.
+router.get('/session-catalog', async (req, res) => {
+  try {
+    const [assignments, allBatches] = await Promise.all([
+      LabAssignment.find({ activeModule: { $ne: null } })
+        .populate('activeModule', 'name date startTime endTime')
+        .sort({ startsAt: -1, assignedAt: -1 })
+        .lean(),
+      User.distinct('batch', { role: 'student', batch: { $nin: [null, ''] } }),
+    ]);
+    const sessions = new Map();
+    for (const assignment of assignments) {
+      const module = assignment.activeModule;
+      if (!module?._id) continue;
+      const sessionDate = assignment.startsAt || module.date || assignment.assignedAt;
+      if (!sessionDate) continue;
+      const date = new Date(sessionDate).toISOString().slice(0, 10);
+      const moduleId = module._id.toString();
+      const slotKey = assignment.slotKey || '';
+      const key = `${date}|${moduleId}|${slotKey}`;
+      if (!sessions.has(key)) {
+        sessions.set(key, {
+          id: key, date, moduleId, moduleName: module.name || 'Module', slotKey,
+          startTime: assignment.startTime || module.startTime || '',
+          endTime: assignment.endTime || module.endTime || '',
+          allBatches: false, batches: new Set(),
+        });
+      }
+      const session = sessions.get(key);
+      if (assignment.targetBatch) session.batches.add(assignment.targetBatch);
+      else session.allBatches = true;
+    }
+    res.json({
+      sessions: [...sessions.values()].map((session) => ({
+        ...session,
+        batches: (session.allBatches ? allBatches : [...session.batches]).sort(),
+      })).sort((a, b) => b.date.localeCompare(a.date) || a.moduleName.localeCompare(b.moduleName)),
+    });
+  } catch (err) {
+    console.error('[performance] session catalog error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/performance/students?batch=N - roster for the batch/class dropdown
 // and for the individual-lookup search box
 router.get('/students', async (req, res) => {
@@ -312,19 +358,25 @@ router.get('/class-csv', async (req, res) => {
       pickBestRun(runsByPair.get(`${userId}|${questionId}`) || []);
 
     // Determine how many TC columns each question needs (max across the class).
-    // Per question: how many testcases, and how many connection pairs each
-    // testcase needs (max across the class) -> TC1,TC1,TC1,TC1,TC1,TC2,TC2,TC2
+    // A testcase can contain several communications, so its repeated columns
+    // intentionally retain the same TC label: TC1, TC1, TC1, then TC2...
     const tcLayoutByQuestion = {};
+    const optionalChecksByQuestion = {};
     for (const q of questions) {
       const qid = q._id.toString();
       const pairCounts = [];
+      const checks = { Persistence: false, Listen: false, Established: false, Closed: false };
       for (const s of students) {
         const run = getRun(s.user_id, qid);
         getTcGroups(run).forEach((g, i) => {
           pairCounts[i] = Math.max(pairCounts[i] || 0, g.verdicts.length);
         });
+        const report = buildQuestionReport(q, run);
+        if (report.persistence) checks.Persistence = true;
+        for (const label of CONN_LABELS) if (report[label]) checks[label] = true;
       }
       tcLayoutByQuestion[qid] = pairCounts.length ? pairCounts : [1];
+      optionalChecksByQuestion[qid] = checks;
     }
 
     const header = ['Roll No'];
@@ -334,7 +386,9 @@ router.get('/class-csv', async (req, res) => {
       layout.forEach((pairCount, i) => {
         for (let j = 0; j < (pairCount || 1); j++) header.push(`TC${i + 1}`);
       });
-      header.push('Persistence', 'Listen', 'Established', 'Closed');
+      const checks = optionalChecksByQuestion[q._id.toString()];
+      if (checks.Persistence) header.push('Persistence');
+      CONN_LABELS.forEach((label) => { if (checks[label]) header.push(label); });
     }
 
     const rows = [header];
@@ -352,10 +406,9 @@ router.get('/class-csv', async (req, res) => {
           const verdicts = report.tcGroups[i]?.verdicts || [];
           for (let j = 0; j < (pairCount || 1); j++) row.push(verdicts[j] ?? '');
         });
-        row.push(report.persistence ?? '');
-        row.push(report.Listen ?? '');
-        row.push(report.Established ?? '');
-        row.push(report.Closed ?? '');
+        const checks = optionalChecksByQuestion[qid];
+        if (checks.Persistence) row.push(report.persistence ?? '');
+        CONN_LABELS.forEach((label) => { if (checks[label]) row.push(report[label] ?? ''); });
       }
       rows.push(row);
     }

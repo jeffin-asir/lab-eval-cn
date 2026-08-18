@@ -1,7 +1,7 @@
 import { WebSocketServer } from 'ws';
 import { Client } from 'ssh2';
 import fs from 'fs';
-import url from 'url';
+import { PassThrough } from 'stream';
 import dotenv from 'dotenv';
 import Session from '../models/Session.js';
 import { createContainerForUser, docker, normalizeSessionId, buildLabResourceName } from '../docker/dockerManager.js';
@@ -271,6 +271,76 @@ function attachWsToSession(ws, session) {
   });
 }
 
+async function startTeacherDockerShell(ws, request) {
+  let stream = null;
+  let exec = null;
+  let pendingResize = null;
+  let resolveInitialResize;
+  const initialResize = new Promise((resolve) => { resolveInitialResize = resolve; });
+  const applyResize = ({ cols, rows }) => {
+    pendingResize = { cols, rows };
+    resolveInitialResize?.();
+    resolveInitialResize = null;
+    if (!exec) return;
+    exec.resize({ w: Math.max(1, Number(cols) || 80), h: Math.max(1, Number(rows) || 24) })
+      .catch((err) => console.error('[Docker shell] resize failed:', err.message));
+  };
+  // Register this before Docker creates the exec stream. The browser sends its
+  // initial xterm dimensions immediately on WebSocket open; without queuing
+  // it, Bash keeps Docker's 80-column default and Tab completion wraps oddly.
+  ws.on('message', (message) => {
+    try {
+      const { type, data, cols, rows } = JSON.parse(message);
+      if (type === 'input' && stream) stream.write(data);
+      if (type === 'resize') applyResize({ cols, rows });
+    } catch (err) { console.error('[Docker shell] invalid websocket message:', err.message); }
+  });
+  ws.on('close', () => { try { stream?.end(); } catch (_) {} });
+  try {
+    const teacher = await getUserFromRequest(request, ['faculty', 'admin']);
+    if (!teacher || !['faculty', 'admin'].includes(teacher.role)) throw new Error('Teacher authentication is required.');
+    const containerId = String(ws.query.containerId || '');
+    if (!containerId) throw new Error('Container ID is required.');
+    const shellUser = ws.query.shellUser === 'root' ? 'root' : 'networklab';
+    const container = docker.getContainer(containerId);
+    const inspect = await container.inspect();
+    if (!inspect.State?.Running) throw new Error('Start the container before opening a Bash shell.');
+    // Do not start Bash with Docker's 80-column default. Waiting a short time
+    // for the browser's first xterm resize gives readline/Tab completion the
+    // correct geometry from its very first prompt.
+    await Promise.race([initialResize, wait(750)]);
+    const initialCols = Math.max(1, Number(pendingResize?.cols) || 80);
+    const initialRows = Math.max(1, Number(pendingResize?.rows) || 24);
+    exec = await container.exec({
+      User: shellUser, Cmd: ['bash', '-l'], AttachStdin: true, AttachStdout: true, AttachStderr: true, Tty: true,
+      ConsoleSize: [initialRows, initialCols],
+    });
+    stream = await exec.start({ hijack: true, stdin: true });
+    // ConsoleSize covers modern Docker engines; resize explicitly as well for
+    // engines that only apply terminal dimensions after ExecStart.
+    await exec.resize({ w: initialCols, h: initialRows });
+    // Docker exec sends stdout/stderr over one multiplexed stream. Passing
+    // that stream straight to xterm renders the final byte of each 8-byte
+    // Docker frame header (the stray "t", "r", "\\" seen on Tab completion).
+    // Demux it before forwarding terminal bytes to the browser.
+    const terminalOutput = new PassThrough();
+    docker.modem.demuxStream(stream, terminalOutput, terminalOutput);
+    terminalOutput.on('data', (data) => {
+      if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'data', data: data.toString('utf8') }));
+    });
+    stream.on('end', () => {
+      if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'end' }));
+    });
+    stream.on('error', (err) => {
+      if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'error', message: err.message }));
+    });
+  } catch (err) {
+    console.error('[Docker shell] failed to start:', err.message);
+    if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'error', message: err.message }));
+    ws.close();
+  }
+}
+
 export function initSSHWebSocket(server) {
   const wss = new WebSocketServer({ noServer: true });
 
@@ -294,16 +364,23 @@ export function initSSHWebSocket(server) {
   wss.on('close', () => clearInterval(heartbeat));
 
   server.on('upgrade', (request, socket, head) => {
-    const { pathname, query } = url.parse(request.url, true);
-    if (pathname === '/ws/ssh') {
+    const requestUrl = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
+    const pathname = requestUrl.pathname;
+    const query = Object.fromEntries(requestUrl.searchParams.entries());
+    if (pathname === '/ws/ssh' || pathname === '/ws/docker-shell') {
       wss.handleUpgrade(request, socket, head, (ws) => {
         ws.query = query;
+        ws.mode = pathname === '/ws/docker-shell' ? 'docker-shell' : 'student-shell';
         wss.emit('connection', ws, request);
       });
     }
   });
 
   wss.on('connection', async (ws, request) => {
+    if (ws.mode === 'docker-shell') {
+      await startTeacherDockerShell(ws, request);
+      return;
+    }
     const { terminalId = 'main', sessionId: requestedSessionId = null } = ws.query;
 
     // Browsers answer WS ping frames with a pong automatically — no

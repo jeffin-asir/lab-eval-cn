@@ -292,9 +292,11 @@ router.post('/test-attempts/start', requireAuth, async (req, res) => {
         await existingAttempt.save();
       }
 
+      const responseNow = new Date();
       return res.json({
         attempt: existingAttempt,
-        remainingSeconds: Math.max(0, Math.floor((existingAttempt.endsAt.getTime() - Date.now()) / 1000)),
+        serverTime: responseNow.toISOString(),
+        remainingSeconds: Math.max(0, Math.floor((existingAttempt.endsAt.getTime() - responseNow.getTime()) / 1000)),
         totalSeconds: getAttemptTotalSeconds(existingAttempt),
       });
     }
@@ -340,9 +342,11 @@ router.post('/test-attempts/start', requireAuth, async (req, res) => {
       });
     }
 
+    const responseNow = new Date();
     res.json({
       attempt,
-      remainingSeconds: Math.max(0, Math.floor((attempt.endsAt.getTime() - Date.now()) / 1000)),
+      serverTime: responseNow.toISOString(),
+      remainingSeconds: Math.max(0, Math.floor((attempt.endsAt.getTime() - responseNow.getTime()) / 1000)),
       totalSeconds: getAttemptTotalSeconds(attempt),
     });
   } catch (err) {

@@ -185,6 +185,21 @@ router.get('/password-reset-requests', async (req, res) => {
   }
 });
 
+// Used by the teacher header to surface actionable requests from every
+// teacher page, without having to first navigate to Batches & Students.
+router.get('/pending-requests', async (req, res) => {
+  try {
+    const [passwordResets, sessionDisconnects] = await Promise.all([
+      PasswordResetRequest.find({ status: 'pending' }).sort({ createdAt: -1 }).lean(),
+      SessionDisconnectRequest.find({ status: 'pending' }).sort({ createdAt: -1 }).lean(),
+    ]);
+    res.json({ passwordResets, sessionDisconnects });
+  } catch (err) {
+    console.error('[batches] pending request notifications error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.patch('/password-reset-requests/:id', async (req, res) => {
   try {
     const { status } = req.body;
