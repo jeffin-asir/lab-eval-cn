@@ -3,7 +3,7 @@ import mongoose from 'mongoose';
 import { authorize, requireAuth } from '../middleware/auth.js';
 
 const router = express.Router();
-router.use(requireAuth, authorize('faculty', 'admin'));
+router.use(requireAuth, authorize('admin'));
 
 const { EJSON } = mongoose.mongo.BSON;
 const MAX_PAGE_SIZE = 100;

@@ -38,6 +38,9 @@ export default function QuestionPane({
   evalMessage,
   submissionRefreshTrigger = 0,
   sessionId = '',
+  showResources = false,
+  isPractice = false,
+  isFreeCoding = false,
 }) {
   if (!questions || !Array.isArray(questions) || questions.length === 0) {
     return (
@@ -109,10 +112,10 @@ export default function QuestionPane({
             <p className="text-xs text-gray-500">Read carefully before coding</p>
           </div>
         </div>
-        <div className="flex items-center space-x-2 text-sm text-gray-600 bg-gray-50 px-3 py-2 rounded-full border border-gray-200">
+        {!isPractice && !isFreeCoding && <div className="flex items-center space-x-2 text-sm text-gray-600 bg-gray-50 px-3 py-2 rounded-full border border-gray-200">
           <AcademicCapIcon className="w-4 h-4 text-blue-500" />
           <span className="font-medium">{question.maxMarks ?? '—'} marks (teacher assigned)</span>
-        </div>
+        </div>}
       </div>
 
       {questionLocked && (
@@ -120,7 +123,7 @@ export default function QuestionPane({
           <LockClosedIcon className="w-4 h-4 shrink-0" />
           <span>
             This question unlocks at <strong>{question.availableAt || 'the scheduled time'}</strong>.
-            You can read it now, but run, evaluate, and submit stay disabled until then.
+            You can read it now, but run and evaluate stay disabled until then.
           </span>
         </div>
       )}
@@ -129,14 +132,24 @@ export default function QuestionPane({
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         question={question}
+        hideSubmissions={isPractice || isFreeCoding}
+        isFreeCoding={isFreeCoding}
       />
 
       <div className="flex-1 overflow-auto">
         {activeTab === 'description' && (
           <div className="p-6 fade-in-up space-y-4">
+            {showResources && question.resources?.length > 0 && (
+              <details className="rounded-lg border border-indigo-200 bg-indigo-50 p-3" open>
+                <summary className="cursor-pointer font-medium text-indigo-800">Resources & learning materials ({question.resources.length})</summary>
+                <ul className="mt-2 list-disc pl-5 text-sm">{question.resources.map((resource, index) => <li key={`${resource.url}-${index}`}><a className="text-indigo-700 underline" href={resource.url.startsWith('http') ? resource.url : `${API_BASE}${resource.url}`} target="_blank" rel="noreferrer">{resource.name}</a></li>)}</ul>
+              </details>
+            )}
             <div
               className="prose prose-sm max-w-none leading-relaxed text-[15px]"
-              dangerouslySetInnerHTML={{ __html: processedDescription || question.description }}
+              dangerouslySetInnerHTML={{ __html: (processedDescription || question.description || '')
+                .replace(/(src|href)=["']https?:\/\/(localhost|127\.0\.0\.1)(?::\d+)?(\/uploads\/[^"']+)["']/gi, '$1="' + API_BASE + '$3"')
+                .replace(/(src|href)=["'](\/uploads\/[^"']+)["']/gi, '$1="' + API_BASE + '$2"') }}
             />
             {question.image && (
               <img
@@ -178,7 +191,7 @@ export default function QuestionPane({
             />
           </div>
         )}
-        {activeTab === 'submissions' && (
+        {activeTab === 'submissions' && !isPractice && !isFreeCoding && (
           <div>
             <Submissions
               questionId={question.id}

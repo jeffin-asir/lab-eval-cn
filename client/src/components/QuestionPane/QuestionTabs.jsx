@@ -5,7 +5,7 @@ import {
 } from '@heroicons/react/24/outline';
 import { TabButton } from '../FormComponents';
 
-export default function QuestionTabs({ activeTab, setActiveTab, question }) {
+export default function QuestionTabs({ activeTab, setActiveTab, question, hideSubmissions = false, isFreeCoding = false }) {
   const tabs = [
     {
       id: 'description',
@@ -17,7 +17,7 @@ export default function QuestionTabs({ activeTab, setActiveTab, question }) {
       label: 'Pre-Code',
       icon: <BeakerIcon className="w-4 h-4" />
     },
-    {
+    ...(!isFreeCoding ? [{
       id: 'testcases',
       label: 'Test Cases',
       icon: <BeakerIcon className="w-4 h-4" />,
@@ -27,12 +27,12 @@ export default function QuestionTabs({ activeTab, setActiveTab, question }) {
           ? question.testCases.length
           : ((question?.testCases?.server?.length || 0) +
              (question?.testCases?.client?.length || 0)))
-    },
-    {
+    }] : []),
+    ...(!hideSubmissions ? [{
       id: 'submissions',
       label: 'Submissions',
       icon: <ClockIcon className="w-4 h-4" />
-    }
+    }] : [])
   ];
 
   return (

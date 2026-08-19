@@ -22,6 +22,9 @@ async function handleEvaluation(req, res, runType) {
     if (!sessionId) {
       return res.status(400).json({ error: 'sessionId is required' });
     }
+    if (runType === 'submit' && String(sessionId).startsWith('PRACTICE_')) {
+      return res.status(403).json({ error: 'Practice sessions are evaluation-only and cannot be submitted.' });
+    }
     if (!tagPaths || Object.keys(tagPaths).length === 0) {
       return res.status(400).json({ error: 'tagPaths is required (tag -> absolute file path)' });
     }
@@ -41,8 +44,27 @@ async function handleEvaluation(req, res, runType) {
       res.flushHeaders?.();
     }
 
+    // Evaluators can produce many small SSH chunks. Streaming them all makes
+    // the browser repeatedly re-render a huge terminal and can freeze Safari.
+    // Preserve enough diagnostic output while keeping the live response safe.
+    let streamedLogChars = 0;
+    let logWasTruncated = false;
+    const MAX_STREAMED_LOG_CHARS = 160_000;
     const sendLog = wantsStream
-      ? (event) => res.write(`${JSON.stringify({ event: 'log', ...event })}\n`)
+      ? (event) => {
+        const message = String(event?.message || '');
+        const remaining = MAX_STREAMED_LOG_CHARS - streamedLogChars;
+        if (remaining <= 0) {
+          if (!logWasTruncated) {
+            logWasTruncated = true;
+            res.write(`${JSON.stringify({ event: 'log', type: 'notice', message: '\n[Live output truncated; evaluation is still running.]\n' })}\n`);
+          }
+          return;
+        }
+        const safeMessage = message.slice(0, remaining);
+        streamedLogChars += safeMessage.length;
+        res.write(`${JSON.stringify({ event: 'log', ...event, message: safeMessage })}\n`);
+      }
       : undefined;
 
     const result = await runAndEvaluate({
@@ -54,6 +76,8 @@ async function handleEvaluation(req, res, runType) {
       tagPaths,
       sourceFiles,
       runType,
+      // Practice feedback is visible only in the current workspace.
+      persistRun: !String(sessionId).startsWith('PRACTICE_'),
       onLog: sendLog,
     });
 

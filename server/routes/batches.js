@@ -6,6 +6,7 @@ import SessionDisconnectRequest from '../models/SessionDisconnectRequest.js';
 import StudentConnection from '../models/StudentConnection.js';
 import { revokeStudentConnection } from '../utils/studentConnections.js';
 import { authorize, requireAuth } from '../middleware/auth.js';
+import { batchFilterFor, canAccessBatch, isAdmin, teacherBatches } from '../utils/teacherScope.js';
 
 const router = express.Router();
 router.use(requireAuth, authorize('faculty', 'admin'));
@@ -48,9 +49,55 @@ function parseStudents(value) {
   return students;
 }
 
+// Admin-only teacher provisioning and batch ownership management.
+router.get('/teachers', authorize('admin'), async (_req, res) => {
+  const teachers = await User.find({ role: { $in: ['faculty', 'admin'] } })
+    .select('name user_id role assignedBatches').sort({ role: 1, name: 1 }).lean();
+  res.json(teachers);
+});
+
+router.post('/create-empty', authorize('admin'), async (req, res) => {
+  try {
+    const name = String(req.body?.name || '').trim().toUpperCase();
+    if (!name) return res.status(400).json({ error: 'Batch name is required.' });
+    if (await Batch.exists({ name })) return res.status(409).json({ error: 'Batch already exists.' });
+    const batch = await Batch.create({ name, defaultPassword: '', studentIds: [], createdBy: req.user.user_id });
+    res.status(201).json({ success: true, batch });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.post('/teachers', authorize('admin'), async (req, res) => {
+  try {
+    const name = String(req.body?.name || '').trim();
+    const userId = String(req.body?.userId || '').trim();
+    const password = String(req.body?.password || '');
+    const assignedBatches = [...new Set((req.body?.assignedBatches || []).map((b) => String(b).trim().toUpperCase()).filter(Boolean))];
+    if (!name || !userId || !password) return res.status(400).json({ error: 'Name, username, and password are required.' });
+    const validBatches = await Batch.countDocuments({ name: { $in: assignedBatches } });
+    if (validBatches !== assignedBatches.length) return res.status(400).json({ error: 'One or more selected batches do not exist.' });
+    if (await User.exists({ user_id: userId })) return res.status(409).json({ error: 'Username already exists.' });
+    const teacher = await User.create({ name, user_id: userId, roll_number: userId, password, role: 'faculty', assignedBatches, mustChangePassword: true });
+    res.status(201).json({ success: true, teacher });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.patch('/teachers/:userId', authorize('admin'), async (req, res) => {
+  const teacher = await User.findOne({ user_id: req.params.userId, role: 'faculty' });
+  if (!teacher) return res.status(404).json({ error: 'Teacher not found.' });
+  const assignedBatches = req.body?.assignedBatches;
+  if (assignedBatches) {
+    const values = [...new Set(assignedBatches.map((b) => String(b).trim().toUpperCase()).filter(Boolean))];
+    if (await Batch.countDocuments({ name: { $in: values } }) !== values.length) return res.status(400).json({ error: 'One or more selected batches do not exist.' });
+    teacher.assignedBatches = values;
+  }
+  if (req.body?.name) teacher.name = String(req.body.name).trim();
+  if (req.body?.password) teacher.password = String(req.body.password);
+  await teacher.save(); res.json({ success: true, teacher });
+});
+
 router.get('/', async (req, res) => {
   try {
-    const batches = await Batch.find({}).sort({ name: 1 }).lean();
+    const batches = await Batch.find(batchFilterFor(req.user)).sort({ name: 1 }).lean();
     res.json(batches);
   } catch (err) {
     console.error('[batches] list error:', err);
@@ -66,9 +113,11 @@ router.post('/', async (req, res) => {
     const ids = parsedStudents.map((student) => student.id);
 
     if (!batchName) return res.status(400).json({ error: 'Batch name is required.' });
+    if (!isAdmin(req.user) && !canAccessBatch(req.user, batchName)) return res.status(403).json({ error: 'You can only add students to batches assigned to you.' });
     if (!defaultPassword) return res.status(400).json({ error: 'Default password is required.' });
     if (!ids.length) return res.status(400).json({ error: 'At least one student ID is required.' });
 
+    if (!isAdmin(req.user) && !(await Batch.exists({ name: batchName }))) return res.status(403).json({ error: 'Only an admin can create a batch.' });
     const batch = await Batch.findOneAndUpdate(
       { name: batchName },
       { name: batchName, defaultPassword, studentIds: ids },
@@ -108,6 +157,7 @@ router.get('/students', async (req, res) => {
   try {
     const filter = { role: 'student' };
     if (req.query.batch) filter.batch = req.query.batch;
+    if (!isAdmin(req.user)) filter.batch = { $in: teacherBatches(req.user) };
     const students = await User.find(filter)
       .select('name user_id roll_number batch mustChangePassword')
       .sort({ batch: 1, roll_number: 1 })
@@ -122,6 +172,9 @@ router.get('/students', async (req, res) => {
 router.patch('/students/:userId', async (req, res) => {
   try {
     const { name, password, mustChangePassword, batch } = req.body;
+    const existing = await User.findOne({ user_id: req.params.userId, role: 'student' }).lean();
+    if (!existing || !canAccessBatch(req.user, existing.batch) || (batch !== undefined && !canAccessBatch(req.user, batch))) return res.status(403).json({ error: 'Student is outside your assigned batches.' });
+    if (!isAdmin(req.user) && batch !== undefined && String(batch).toUpperCase() !== String(existing.batch).toUpperCase()) return res.status(403).json({ error: 'Teachers cannot move students between batches.' });
     const update = {};
     if (name !== undefined) update.name = name;
     if (password) update.password = password;
@@ -156,6 +209,8 @@ router.patch('/students/:userId', async (req, res) => {
 
 router.delete('/students/:userId', async (req, res) => {
   try {
+    const existing = await User.findOne({ user_id: req.params.userId, role: 'student' }).lean();
+    if (!existing || !canAccessBatch(req.user, existing.batch)) return res.status(403).json({ error: 'Student is outside your assigned batches.' });
     const student = await User.findOneAndDelete({
       user_id: req.params.userId,
       role: 'student',

@@ -50,7 +50,7 @@ router.get('/session-catalog', async (req, res) => {
   try {
     const [assignments, allBatches] = await Promise.all([
       LabAssignment.find({ activeModule: { $ne: null } })
-        .populate('activeModule', 'name date startTime endTime')
+        .populate('activeModule', 'name date startTime endTime deliveryMode')
         .sort({ startsAt: -1, assignedAt: -1 })
         .lean(),
       User.distinct('batch', { role: 'student', batch: { $nin: [null, ''] } }),
@@ -70,6 +70,7 @@ router.get('/session-catalog', async (req, res) => {
           id: key, date, moduleId, moduleName: module.name || 'Module', slotKey,
           startTime: assignment.startTime || module.startTime || '',
           endTime: assignment.endTime || module.endTime || '',
+          deliveryMode: module.deliveryMode || 'session',
           allBatches: false, batches: new Set(),
         });
       }

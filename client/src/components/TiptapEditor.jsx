@@ -18,6 +18,7 @@ import Color from '@tiptap/extension-color'
 import FontFamily from '@tiptap/extension-font-family'
 import FontSize from './tiptap-extension-font-size'
 import { processCodeBlocks } from './utils/codeBlockHelper';
+import { API_BASE } from '../config';
 
 // Page break extension for manual page breaks
 const PageBreak = Node.create({
@@ -306,7 +307,7 @@ export default function TiptapEditor({ value, onChange }) {
         try {
           const formData = new FormData();
           formData.append('image', file);
-          const response = await axios.post('http://localhost:5001/api/questions/upload-image', formData);
+          const response = await axios.post(`${API_BASE}/api/questions/upload-image`, formData);
           
           // Use the returned URL in the editor
           if (response.data.success) {

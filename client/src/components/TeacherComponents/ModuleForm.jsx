@@ -252,6 +252,20 @@ const ModuleForm = ({
             />
           </div>
         </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <FormLabel htmlFor="deliveryMode">Live module mode</FormLabel>
+            <select id="deliveryMode" {...moduleForm.register('deliveryMode')} className={fieldClasses}>
+              <option value="session">Lab session — resources available</option>
+              <option value="exam">Lab exam — locked browser, no resources</option>
+            </select>
+          </div>
+          <label className="flex items-center gap-2 pt-7 text-sm text-gray-700">
+            <input type="checkbox" {...moduleForm.register('practiceReleased')} />
+            Release this module for unlimited student practice
+          </label>
+        </div>
       </FormSection>
 
       <FormSection title="Selected Questions">

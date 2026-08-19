@@ -3,8 +3,13 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { Question, CNQuestion } from '../models/Question.js';
+import { requireAuth, authorize } from '../middleware/auth.js';
 
 const router = express.Router();
+// Questions include answer scaffolding, evaluator scripts and optional learning
+// materials. They are teacher-only; students receive a mode-filtered copy via
+// the live/practice session endpoints.
+router.use(requireAuth, authorize('faculty', 'admin'));
 
 // Multer setup for image uploads
 const storage = multer.diskStorage({
@@ -34,6 +39,15 @@ const upload = multer({
     }
     cb(null, true);
   }
+});
+
+const resourceUpload = multer({
+  storage,
+  limits: { fileSize: 25 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = /\.(pdf|png|jpe?g|gif|webp)$/i.test(file.originalname);
+    cb(allowed ? null : new Error('Only PDF and image resources are allowed.'), allowed);
+  },
 });
 
 // POST api/questions - create a new question
@@ -73,15 +87,27 @@ router.post('/upload-image', upload.single('image'), async (req, res) => {
       return res.status(400).json({ error: 'No image uploaded' });
     }
     
-    // Return the URL to the uploaded image with absolute path
-    const serverUrl = process.env.SERVER_URL || `http://${req.headers.host}`;
-    const imageUrl = `${serverUrl}/uploads/${req.file.filename}`;
+    // A relative URL works behind a reverse proxy and from every student PC.
+    const imageUrl = `/uploads/${req.file.filename}`;
     res.json({ 
       success: true, 
       url: imageUrl
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/upload-resource', resourceUpload.single('resource'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No resource uploaded' });
+    res.status(201).json({
+      name: req.file.originalname,
+      url: `/uploads/${req.file.filename}`,
+      mimeType: req.file.mimetype || '',
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 

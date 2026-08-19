@@ -60,11 +60,14 @@ export function parseSlotKey(slotKey) {
   if (!slotKey) return null;
   const parts = String(slotKey).split('_');
 
-  // moduleId_YYYY-MM-DD_HHMM_HHMM
+  // moduleId_YYYY-MM-DD_HHMM_HHMM[_session|_exam]
   if (parts.length >= 4 && /^\d{4}-\d{2}-\d{2}$/.test(parts[1])) {
     const times = parseTimeParts(parts[2], parts[3]);
     if (times) {
-      return { moduleId: parts[0], datePart: parts[1], ...times };
+      const deliveryMode = /^(session|exam)$/i.test(parts[4] || '')
+        ? parts[4].toLowerCase()
+        : '';
+      return { moduleId: parts[0], datePart: parts[1], deliveryMode, ...times };
     }
   }
 
@@ -99,10 +102,11 @@ export function normalizeSessionId(sessionIdOrSlotKey) {
     const dateCompact = parsed.datePart.replace(/-/g, '');
     const startCompact = parsed.startTime.replace(':', '');
     const endCompact = parsed.endTime.replace(':', '');
+    const deliverySuffix = parsed.deliveryMode ? `_${parsed.deliveryMode}` : '';
     if (parsed.moduleId) {
-      return `${parsed.moduleId}_${dateCompact}_${startCompact}_${endCompact}`;
+      return `${parsed.moduleId}_${dateCompact}_${startCompact}_${endCompact}${deliverySuffix}`;
     }
-    return `${dateCompact}_${startCompact}_${endCompact}`;
+    return `${dateCompact}_${startCompact}_${endCompact}${deliverySuffix}`;
   }
 
   // Already normalized or legacy compact: 20260713_AN, moduleId_20260713_0900_1230
@@ -112,6 +116,16 @@ export function normalizeSessionId(sessionIdOrSlotKey) {
     return `${first.replace(/-/g, '')}_${rest.join('_').toUpperCase()}`;
   }
   return `${first}_${rest.map((part, idx) => (idx === 0 ? part.replace(/-/g, '') : part)).join('_')}`;
+}
+
+// A session and an exam may use the same module and scheduled time. Their
+// runtime workspaces must still be isolated, so mode is part of the resource
+// identity used for sessions, containers, and volumes.
+export function buildRuntimeSessionId(slotKey, deliveryMode = 'session') {
+  const normalized = normalizeSessionId(slotKey);
+  if (!normalized || normalized === 'FREE_CODING' || normalized.startsWith('PRACTICE_')) return normalized;
+  if (/(?:_|^)(session|exam)$/i.test(normalized)) return normalized;
+  return `${normalized}_${deliveryMode === 'exam' ? 'exam' : 'session'}`;
 }
 
 export function formatSlotLabel(slotKey, startTime, endTime) {

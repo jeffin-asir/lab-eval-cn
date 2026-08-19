@@ -19,6 +19,7 @@ export default function RunButtons({
   setShowTerminal,
   onEvaluate,
   isFreeCoding,
+  isPractice,
   alreadyPassed
 }) {
 
@@ -69,7 +70,7 @@ export default function RunButtons({
         </button>
 
         {/* Evaluate button — hidden in free-coding mode, nothing to grade against */}
-        {!isFreeCoding && (
+        {!isFreeCoding && !isPractice && (
           <button
             onClick={onEvaluate}
             disabled={isRunning || isEvaluating || isSubmitting}

@@ -15,6 +15,7 @@ const userSchema = new mongoose.Schema({
   semester: { type: Number },
   session_token: { type: String, default: null },
   assignedCourses: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Course' }]
+  ,assignedBatches: [{ type: String, trim: true, uppercase: true }]
 });
 
 export default mongoose.model('User', userSchema);

@@ -10,6 +10,7 @@ import {
 } from '../utils/labSession.js';
 import mongoose from 'mongoose';
 import { protect, authorize, requireAuth } from '../middleware/auth.js';
+import { canAccessBatch, isAdmin } from '../utils/teacherScope.js';
 
 const router = express.Router();
 
@@ -62,12 +63,19 @@ function buildModulePayload(body, questionIds) {
     time: `${startTime} – ${endTime}`,
     questionSchedule: normalizeQuestionSchedule(body, questionIds, startTime),
     targetBatch: body.targetBatch || '',
-    envSettings: body.envSettings || {
+    deliveryMode: body.deliveryMode === 'exam' ? 'exam' : 'session',
+    practiceReleased: body.practiceReleased === true,
+    envSettings: body.deliveryMode === 'exam' ? {
+      allowTabSwitch: false,
+      allowExternalCopyPaste: false,
+      allowInternalCopyPaste: true,
+      enforceFullscreen: true,
+    } : (body.envSettings || {
       allowTabSwitch: false,
       allowExternalCopyPaste: false,
       allowInternalCopyPaste: true,
       enforceFullscreen: false,
-    },
+    }),
     moduleType: 'CNModule',
   };
 }
@@ -108,9 +116,12 @@ router.post('/', requireAuth, authorize('faculty', 'admin'), async (req, res) =>
       return res.status(400).json({ error: timeErr.message });
     }
 
+    if (!isAdmin(req.user) && req.body.targetBatch && !canAccessBatch(req.user, req.body.targetBatch)) return res.status(403).json({ error: 'Target batch is not assigned to you.' });
     const moduleData = {
       ...buildModulePayload(req.body, questions),
       date: moduleDate,
+      creator: req.user.name,
+      creatorId: req.user.user_id,
     };
     const newModule = await CNModule.create(moduleData);
     res.status(201).json(newModule);
@@ -121,10 +132,11 @@ router.post('/', requireAuth, authorize('faculty', 'admin'), async (req, res) =>
 });
 
 // Get all modules - with auth protection
-router.get('/', protect, async (req, res) => {
+router.get('/', requireAuth, authorize('faculty', 'admin'), async (req, res) => {
   try {
     const { course } = req.query;
     const filter = course ? { course: mongoose.Types.ObjectId(course) } : {};
+    if (!isAdmin(req.user)) filter.creatorId = req.user.user_id;
 
     const modules = await CNModule.find(filter)
       .populate('questions')
@@ -145,7 +157,7 @@ router.get('/active-assignments', requireAuth, authorize('faculty', 'admin'), as
       activeModule: { $ne: null },
       $or: [{ endsAt: null }, { endsAt: { $gt: new Date() } }],
     })
-      .populate('activeModule', 'name date startTime endTime targetBatch maxMarks')
+      .populate('activeModule', 'name date startTime endTime targetBatch maxMarks deliveryMode')
       .sort({ assignedAt: -1 })
       .lean();
 
@@ -154,6 +166,7 @@ router.get('/active-assignments', requireAuth, authorize('faculty', 'admin'), as
       key: assignment.key,
       moduleId: assignment.activeModule?._id,
       moduleName: assignment.activeModule?.name || 'Module',
+      deliveryMode: assignment.activeModule?.deliveryMode || 'session',
       slotKey: assignment.slotKey,
       targetBatch: assignment.targetBatch || '',
       startTime: assignment.startTime || assignment.activeModule?.startTime || '',
@@ -169,7 +182,7 @@ router.get('/active-assignments', requireAuth, authorize('faculty', 'admin'), as
   }
 });
 
-router.get('/:id', protect, async (req, res) => {
+router.get('/:id', requireAuth, authorize('faculty', 'admin'), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -195,7 +208,7 @@ router.get('/:id', protect, async (req, res) => {
 router.put('/:id', requireAuth, authorize('faculty', 'admin'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, description, lab, questions, maxMarks, date, targetBatch, startTime, endTime, questionSchedule } = req.body;
+    const { name, description, lab, questions, maxMarks, date, targetBatch, startTime, endTime, questionSchedule, deliveryMode, practiceReleased } = req.body;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ error: 'Invalid module ID' });
@@ -234,6 +247,12 @@ router.put('/:id', requireAuth, authorize('faculty', 'admin'), async (req, res) 
         time: `${resolvedStart} – ${resolvedEnd}`,
         questionSchedule: normalizeQuestionSchedule({ questionSchedule }, questions, resolvedStart),
         targetBatch: targetBatch || '',
+        deliveryMode: deliveryMode === 'exam' ? 'exam' : 'session',
+        practiceReleased: practiceReleased === true,
+        envSettings: deliveryMode === 'exam' ? {
+          allowTabSwitch: false, allowExternalCopyPaste: false,
+          allowInternalCopyPaste: true, enforceFullscreen: true,
+        } : undefined,
       },
       { new: true, runValidators: true }
     );
@@ -318,8 +337,10 @@ router.post('/:moduleId/assign-to-test-session', requireAuth, authorize('faculty
     if (!module) {
       return res.status(404).json({ error: 'Module not found' });
     }
+    if (!isAdmin(req.user) && module.creatorId !== req.user.user_id) return res.status(403).json({ error: 'You can only assign modules you created.' });
 
     const targetBatch = req.body.targetBatch ?? module.targetBatch ?? '';
+    if (!isAdmin(req.user) && (!targetBatch || !canAccessBatch(req.user, targetBatch))) return res.status(403).json({ error: 'Select a batch assigned to you.' });
     const assignedAt = new Date();
 
     let times;
@@ -390,7 +411,7 @@ router.post('/active-assignment/clear', requireAuth, authorize('faculty', 'admin
   }
 });
 
-router.get('/:moduleId/questions', async (req, res) => {
+router.get('/:moduleId/questions', requireAuth, authorize('faculty', 'admin'), async (req, res) => {
   try {
     const { moduleId } = req.params;
 

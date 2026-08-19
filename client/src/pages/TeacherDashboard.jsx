@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import Header from '../components/Header';
@@ -12,30 +12,24 @@ import {
   ClipboardDocumentListIcon,
   UsersIcon,
   ClockIcon,
+  UserPlusIcon,
 } from '@heroicons/react/24/outline';
 
 const actions = [
+  { key: 'teachers', title: 'Teachers & Batch Assignments', description: 'Create teacher accounts and assign their batches.', icon: UserPlusIcon, to: '/teacher-management', color: 'from-violet-500 to-indigo-600', adminOnly: true },
   {
-    key: 'create-questions',
-    title: 'Create Questions',
+    key: 'manage-questions',
+    title: 'Manage Questions',
     description: 'Author new CN lab questions, test cases, and eval scripts.',
     icon: DocumentPlusIcon,
-    to: '/teacher-upload?tab=upload',
+    to: '/teacher-upload?tab=manage',
     color: 'from-indigo-500 to-purple-600',
   },
   {
     key: 'manage-modules',
-    title: 'Manage Modules',
+    title: 'Manage Module',
     description: 'Group questions into modules and manage the module bank.',
     icon: ClipboardDocumentListIcon,
-    to: '/teacher-upload?tab=modules',
-    color: 'from-emerald-500 to-teal-600',
-  },
-  {
-    key: 'send-module',
-    title: 'Send Module',
-    description: 'Broadcast a module to every active student session.',
-    icon: PaperAirplaneIcon,
     to: '/teacher-upload?tab=modules&labSession=1',
     color: 'from-cyan-500 to-blue-600',
   },
@@ -91,11 +85,13 @@ const actions = [
 
 export default function TeacherDashboard() {
   const navigate = useNavigate();
+  const [role, setRole] = useState('faculty');
 
   useEffect(() => {
     axios.get(`${API_BASE}/api/auth/me`, { params: { role: 'teacher' } })
       .then((res) => {
         if (!['faculty', 'admin'].includes(res.data.user.role)) navigate('/teacher-login');
+        else setRole(res.data.user.role);
       })
       .catch((err) => { if (err.response?.status === 401) navigate('/teacher-login'); });
   }, [navigate]);
@@ -110,8 +106,6 @@ export default function TeacherDashboard() {
       <Header
         title="Teacher Dashboard"
         isTeacherPage={true}
-        backLink="/"
-        backText="Back to Home"
         onLogout={handleLogout}
       />
 
@@ -120,7 +114,7 @@ export default function TeacherDashboard() {
           <h2 className="text-lg font-medium text-gray-900 mb-6">What would you like to do?</h2>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
-            {actions.map(({ key, title, description, icon: Icon, to, color }) => (
+            {actions.filter((action) => role === 'admin' || (!action.adminOnly && !['docker-manager', 'mongodb-manager'].includes(action.key))).map(({ key, title, description, icon: Icon, to, color }) => (
               <button
                 key={key}
                 onClick={() => navigate(to)}

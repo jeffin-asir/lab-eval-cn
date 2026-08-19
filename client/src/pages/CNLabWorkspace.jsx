@@ -265,6 +265,27 @@ const TimeLockedExit = ({ show, onExit }) => {
   );
 };
 
+const ExamNotice = ({ message }) => message ? (
+  <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[1200] max-w-md rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 shadow-lg" role="status">
+    {message}
+  </div>
+) : null;
+
+const ExamLockOverlay = ({ show, onResume, resuming }) => {
+  if (!show) return null;
+  return (
+    <div className="fixed inset-0 z-[1300] flex items-center justify-center bg-slate-950/85 p-4">
+      <div className="w-full max-w-md rounded-xl border border-slate-600 bg-white p-6 text-center shadow-2xl">
+        <h2 className="text-xl font-semibold text-slate-900">Exam paused</h2>
+        <p className="mt-2 text-sm text-slate-600">Full-screen exam mode was exited or the exam window lost focus. Return to full screen to continue working.</p>
+        <button type="button" onClick={onResume} disabled={resuming} className="mt-5 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60">
+          {resuming ? 'Returning…' : 'Return to fullscreen'}
+        </button>
+      </div>
+    </div>
+  );
+};
+
 const WorkspaceLoading = ({ message = 'Preparing your lab workspace...' }) => (
   <div className="min-h-screen bg-gray-50 flex items-center justify-center">
     <div className="w-full max-w-sm rounded-lg border border-gray-200 bg-white shadow-sm p-6 text-center">
@@ -325,6 +346,7 @@ export default function CNLabWorkspace() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const forceFreeCoding = searchParams.get('free') === '1';
+  const practiceMode = searchParams.get('practice') === '1';
   const requestedModuleId = searchParams.get('moduleId') || '';
   const requestedSessionId = searchParams.get('sessionId') || '';
   const isMobile = useIsMobile();
@@ -373,10 +395,27 @@ export default function CNLabWorkspace() {
   });
   const [timeLocked, setTimeLocked] = useState(false);
   const [closingSession, setClosingSession] = useState(false);
+  const [examNotice, setExamNotice] = useState('');
+  const [examAccessLocked, setExamAccessLocked] = useState(false);
+  const [resumingExam, setResumingExam] = useState(false);
   const panelRef = useRef(null);
   const logBoxRef = useRef(null);
+  const evaluationLogBufferRef = useRef([]);
+  const evaluationLogFlushTimerRef = useRef(null);
+  const examNoticeTimerRef = useRef(null);
   const dirtyFileIdsRef = useRef(new Set());
   const fileHydrationRequestRef = useRef(0);
+
+  // Native alert()/confirm() dialogs force browsers out of the Fullscreen API.
+  // Keep operational feedback inside the page so normal exam actions do not
+  // inadvertently break the exam lock.
+  const showExamNotice = useCallback((message) => {
+    setExamNotice(message);
+    window.clearTimeout(examNoticeTimerRef.current);
+    examNoticeTimerRef.current = window.setTimeout(() => setExamNotice(''), 4_000);
+  }, []);
+
+  useEffect(() => () => window.clearTimeout(examNoticeTimerRef.current), []);
 
   // Per-question memory of which files were open (the question's own
   // defaults plus anything the student opened/created beyond them) so that
@@ -394,6 +433,7 @@ export default function CNLabWorkspace() {
   const lastLoadedModuleIdRef = useRef(null);
   const autoSubmitStartedRef = useRef(false);
   const closeSentRef = useRef(false);
+  const intentionalExamExitRef = useRef(false);
   // const [isSubmitted, setIsSubmitted] = useState(false);
 
   useEffect(() => {
@@ -413,7 +453,8 @@ export default function CNLabWorkspace() {
           // try to initialize concurrently. Use a global promise slot.
           if (!window.__labSessionInitPromise) {
             window.__labSessionInitPromise = axios.post(`${API_BASE}/api/sessions/init`, {
-              mode: forceFreeCoding ? 'free' : 'lab',
+              mode: forceFreeCoding ? 'free' : (practiceMode ? 'practice' : 'lab'),
+              moduleId: requestedModuleId || undefined,
             }).then((res) => {
               window.__labSessionId = res.data.sessionId;
               return res;
@@ -456,7 +497,10 @@ export default function CNLabWorkspace() {
         const sessionId = getCurrentLabSession();
 
         let moduleData = null;
-        if (!forceFreeCoding) {
+        if (practiceMode && requestedModuleId) {
+          const practiceRes = await axios.get(`${API_BASE}/api/sessions/practice/${requestedModuleId}`);
+          moduleData = practiceRes.data;
+        } else if (!forceFreeCoding) {
           try {
             const currentModuleRes = await axios.get(
               `${API_BASE}/api/sessions/${sessionId}/current-module`,
@@ -499,6 +543,8 @@ export default function CNLabWorkspace() {
             startsAt: moduleData.assignment?.startsAt || null,
             endsAt: moduleData.assignment?.endsAt || null,
             targetBatch: moduleData.assignment?.targetBatch || moduleData.targetBatch || '',
+            deliveryMode: moduleData.deliveryMode || 'session',
+            workspaceMode: moduleData.workspaceMode || (practiceMode ? 'practice' : 'live'),
           });
 
           // Fetch questions for this module if not already included
@@ -525,11 +571,13 @@ export default function CNLabWorkspace() {
             availableAtDate: q.availableAtDate || null,
             moduleDate: moduleData.date,
             isAvailable: q.isAvailable !== false,
+            resources: q.resources || [],
           }));
 
           setQuestions(formattedQuestions);
+          if (practiceMode) setQuestionPaneTab('description');
           lastLoadedModuleIdRef.current = moduleData._id;
-          startOrRefreshAttempt(moduleData._id).catch((err) => {
+          if (!practiceMode) startOrRefreshAttempt(moduleData._id).catch((err) => {
             console.error('Failed to start/refresh test attempt:', err);
             setModuleError(err.response?.data?.error || 'Could not start your test timer.');
           });
@@ -544,7 +592,8 @@ export default function CNLabWorkspace() {
             description: "No lab module has been assigned right now. Feel free to write and run any C program you'd like using the editor below.",
             maxMarks: null,
             time: null,
-            date: new Date().toISOString()
+            date: new Date().toISOString(),
+            workspaceMode: 'free',
           });
           setAttemptInfo(null);
           if (lastLoadedModuleIdRef.current !== 'free_coding') {
@@ -554,6 +603,7 @@ export default function CNLabWorkspace() {
           }
           lastLoadedModuleIdRef.current = 'free_coding';
 
+          setQuestionPaneTab('description');
           setQuestions([buildFreeCodingQuestion()]);
         }
       } catch (error) {
@@ -566,9 +616,10 @@ export default function CNLabWorkspace() {
           _id: "free_coding",
           name: "Free Coding",
           description: "Couldn't reach the lab server just now. Feel free to write and run any C program you'd like using the editor below.",
-          maxMarks: null,
-          time: null,
-          date: new Date().toISOString()
+            maxMarks: null,
+            time: null,
+            date: new Date().toISOString(),
+            workspaceMode: 'free',
         });
         setAttemptInfo(null);
         if (lastLoadedModuleIdRef.current !== 'free_coding') {
@@ -577,6 +628,7 @@ export default function CNLabWorkspace() {
           setActiveQuestionIdx(0);
         }
         lastLoadedModuleIdRef.current = 'free_coding';
+        setQuestionPaneTab('description');
         setQuestions([buildFreeCodingQuestion()]);
       } finally {
         setLoadingQuestions(false);
@@ -587,7 +639,7 @@ export default function CNLabWorkspace() {
     
     // Set up event listener for module changes
     const handleModuleChange = () => {
-      if (forceFreeCoding) return;
+      if (forceFreeCoding || practiceMode) return;
       console.log('Module change detected, refreshing...');
       fetchModuleData();
       
@@ -605,7 +657,7 @@ export default function CNLabWorkspace() {
     // than watching a localStorage value that only exists on the teacher's
     // own browser.
     const checkModuleInterval = setInterval(async () => {
-      if (forceFreeCoding) return;
+      if (forceFreeCoding || practiceMode) return;
       try {
         const sessionId = getCurrentLabSession();
         const res = await axios.get(`${API_BASE}/api/sessions/${sessionId}/current-module`, {
@@ -625,7 +677,7 @@ export default function CNLabWorkspace() {
       window.removeEventListener('module-change', handleModuleChange);
       clearInterval(checkModuleInterval);
     };
-  }, [authReady, forceFreeCoding, requestedModuleId]);
+  }, [authReady, forceFreeCoding, practiceMode, requestedModuleId]);
 
   const getBoilerplateForLanguage = (precode, targetLanguage = 'c') => {
     if (typeof precode === 'string') {
@@ -684,7 +736,7 @@ export default function CNLabWorkspace() {
   };
 
   useEffect(() => {
-    if (!moduleInfo?._id || moduleInfo._id === 'free_coding') return undefined;
+    if (!moduleInfo?._id || moduleInfo._id === 'free_coding' || moduleInfo.workspaceMode === 'practice') return undefined;
 
     const interval = setInterval(() => {
       startOrRefreshAttempt(moduleInfo._id).catch((err) => {
@@ -693,7 +745,7 @@ export default function CNLabWorkspace() {
     }, 15000);
 
     return () => clearInterval(interval);
-  }, [moduleInfo?._id]);
+  }, [moduleInfo?._id, moduleInfo?.workspaceMode]);
 
 
   function getTagsFromQuestion(question) {
@@ -1024,7 +1076,7 @@ export default function CNLabWorkspace() {
   const handleRun = () => {
     if (timeLocked) return;
     if (activeQuestionLocked) {
-      alert(`This question is not available yet. It opens at ${questions[activeQuestionIdx]?.availableAt || 'the scheduled time'}.`);
+      showExamNotice(`This question is not available yet. It opens at ${questions[activeQuestionIdx]?.availableAt || 'the scheduled time'}.`);
       return;
     }
     setIsRunning(true);
@@ -1091,13 +1143,37 @@ export default function CNLabWorkspace() {
     dirtyFileIdsRef.current.delete(file.id);
   };
 
+  const flushEvaluationLogs = () => {
+    window.clearTimeout(evaluationLogFlushTimerRef.current);
+    evaluationLogFlushTimerRef.current = null;
+    const pending = evaluationLogBufferRef.current;
+    if (!pending.length) return;
+    evaluationLogBufferRef.current = [];
+    setEvaluationOverlay((prev) => {
+      const nextLogs = [...prev.logs, ...pending];
+      // Keep the overlay responsive even if a command is unexpectedly noisy.
+      let charCount = 0;
+      const retained = [];
+      for (let index = nextLogs.length - 1; index >= 0; index -= 1) {
+        charCount += nextLogs[index].length;
+        if (charCount > 180_000) break;
+        retained.unshift(nextLogs[index]);
+      }
+      return { ...prev, logs: retained };
+    });
+  };
+
   const appendEvaluationLog = (line) => {
     const text = line.endsWith('\n') ? line : `${line}\n`;
-    setEvaluationOverlay((prev) => ({
-      ...prev,
-      logs: [...prev.logs, text],
-    }));
+    evaluationLogBufferRef.current.push(text);
+    if (!evaluationLogFlushTimerRef.current) {
+      evaluationLogFlushTimerRef.current = window.setTimeout(flushEvaluationLogs, 120);
+    }
   };
+
+  useEffect(() => () => {
+    window.clearTimeout(evaluationLogFlushTimerRef.current);
+  }, []);
 
   useEffect(() => {
     if (logBoxRef.current) {
@@ -1106,6 +1182,9 @@ export default function CNLabWorkspace() {
   }, [evaluationOverlay.logs]);
 
   const runEvaluationWithLogs = async ({ endpoint, payload, title }) => {
+    window.clearTimeout(evaluationLogFlushTimerRef.current);
+    evaluationLogFlushTimerRef.current = null;
+    evaluationLogBufferRef.current = [];
     setEvaluationOverlay({
       open: true,
       title,
@@ -1152,6 +1231,7 @@ export default function CNLabWorkspace() {
       }
     }
 
+    flushEvaluationLogs();
     setEvaluationOverlay((prev) => ({ ...prev, running: false }));
     return finalResult || {};
   };
@@ -1406,11 +1486,84 @@ export default function CNLabWorkspace() {
 
   const activeFile = files.find(f => f.id === activeFileId) || files[0];
   const isFreeCoding = moduleInfo?._id === 'free_coding';
+  const isPractice = moduleInfo?.workspaceMode === 'practice';
+  const isExam = moduleInfo?.deliveryMode === 'exam' && !isPractice;
+
+  useEffect(() => {
+    if (!isExam) {
+      setExamAccessLocked(false);
+      return undefined;
+    }
+    const isMonacoEditorEvent = (event) => {
+      const target = event.target instanceof Element ? event.target : document.activeElement;
+      return Boolean(target?.closest?.('.monaco-editor'));
+    };
+    const blockExternalPaste = (event) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (!isMonacoEditorEvent(event)) showExamNotice('Clipboard paste is disabled outside the code editor during this lab exam.');
+    };
+    const blockClipboardCopy = (event) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (!isMonacoEditorEvent(event)) showExamNotice('Clipboard copy and cut are disabled outside the code editor during this lab exam.');
+    };
+    const blockClipboardShortcut = (event) => {
+      if (!(event.ctrlKey || event.metaKey) || !['c', 'v', 'x'].includes(event.key.toLowerCase())) return;
+      // Monaco handles these editor-local commands with the page-memory
+      // clipboard configured in EditorPane. Everywhere else they are blocked.
+      if (isMonacoEditorEvent(event)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      showExamNotice('Clipboard shortcuts are disabled during this lab exam.');
+    };
+    const isFullscreen = () => Boolean(document.fullscreenElement || document.webkitFullscreenElement);
+    const noteFullscreenExit = () => {
+      if (!isFullscreen() && !intentionalExamExitRef.current) setExamAccessLocked(true);
+    };
+    const noteTabReturn = () => {
+      if (!document.hidden) setExamAccessLocked(true);
+    };
+    document.addEventListener('paste', blockExternalPaste, true);
+    document.addEventListener('copy', blockClipboardCopy, true);
+    document.addEventListener('cut', blockClipboardCopy, true);
+    document.addEventListener('keydown', blockClipboardShortcut, true);
+    document.addEventListener('fullscreenchange', noteFullscreenExit);
+    document.addEventListener('webkitfullscreenchange', noteFullscreenExit);
+    document.addEventListener('visibilitychange', noteTabReturn);
+    const enterFullscreen = document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen;
+    const fullscreenRequest = enterFullscreen?.call(document.documentElement);
+    fullscreenRequest?.catch(() => {});
+    return () => {
+      document.removeEventListener('paste', blockExternalPaste, true);
+      document.removeEventListener('copy', blockClipboardCopy, true);
+      document.removeEventListener('cut', blockClipboardCopy, true);
+      document.removeEventListener('keydown', blockClipboardShortcut, true);
+      document.removeEventListener('fullscreenchange', noteFullscreenExit);
+      document.removeEventListener('webkitfullscreenchange', noteFullscreenExit);
+      document.removeEventListener('visibilitychange', noteTabReturn);
+      setExamNotice('');
+    };
+  }, [isExam, showExamNotice]);
+
+  const resumeExamFullscreen = async () => {
+    setResumingExam(true);
+    try {
+      const enterFullscreen = document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen;
+      await enterFullscreen?.call(document.documentElement);
+      if (document.fullscreenElement || document.webkitFullscreenElement) setExamAccessLocked(false);
+      else setExamNotice('Fullscreen was not granted. Use the browser’s fullscreen permission, then try again.');
+    } catch {
+      setExamNotice('Fullscreen was not granted. Use the browser’s fullscreen permission, then try again.');
+    } finally {
+      setResumingExam(false);
+    }
+  };
 
   const handleEvaluate = async () => {
     if (timeLocked) return;
     if (activeQuestionLocked) {
-      alert(`This question is not available yet. It opens at ${questions[activeQuestionIdx]?.availableAt || 'the scheduled time'}.`);
+      showExamNotice(`This question is not available yet. It opens at ${questions[activeQuestionIdx]?.availableAt || 'the scheduled time'}.`);
       return;
     }
     const currentQuestion = questions[activeQuestionIdx];
@@ -1418,7 +1571,7 @@ export default function CNLabWorkspace() {
 
     const tagError = getTagAssignmentError();
     if (tagError) {
-      alert(tagError);
+      showExamNotice(tagError);
       return;
     }
 
@@ -1477,7 +1630,7 @@ export default function CNLabWorkspace() {
         running: false,
         logs: [...prev.logs, error.message || 'Evaluation failed.'],
       }));
-      alert(error.response?.data?.error || 'Evaluation failed');
+      showExamNotice(error.response?.data?.error || 'Evaluation failed');
     } finally {
       setIsEvaluating(false);
     }
@@ -1499,6 +1652,8 @@ export default function CNLabWorkspace() {
 
     try {
       setClosingSession(true);
+      intentionalExamExitRef.current = true;
+      if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
       // Instruct terminals to stop and avoid reconnecting
       window.dispatchEvent(new CustomEvent('close-session'));
       window.dispatchEvent(new CustomEvent('stop-all-processes'));
@@ -1591,13 +1746,14 @@ export default function CNLabWorkspace() {
     : false;
 
   const handleSubmit = async () => {
+    if (isPractice) return null;
     if (timeLocked) return null;
     if (activeQuestionLocked) {
-      alert(`This question is not available yet. It opens at ${questions[activeQuestionIdx]?.availableAt || 'the scheduled time'}.`);
+      showExamNotice(`This question is not available yet. It opens at ${questions[activeQuestionIdx]?.availableAt || 'the scheduled time'}.`);
       return null;
     }
     const activeQuestion = questions[activeQuestionIdx];
-    if (activeQuestion && passedQuestionIds.has(activeQuestion.id)) {
+    if (!isExam && activeQuestion && passedQuestionIds.has(activeQuestion.id)) {
       const proceed = window.confirm(
         "You've already passed all test cases for this question. Submit again anyway?"
       );
@@ -1624,7 +1780,7 @@ export default function CNLabWorkspace() {
         : 'This question has no tags configured. Please ask the teacher to set file tags before submitting.';
     if (tagError) {
       if (autoSubmitted) return null;
-      alert(tagError);
+      showExamNotice(tagError);
       return;
     }
 
@@ -1734,7 +1890,7 @@ export default function CNLabWorkspace() {
         ));
       }
       setSubmissionRefreshTrigger((n) => n + 1);
-      if (!autoSubmitted) alert(`Submitted successfully. ${statusLabel}`);
+      if (!autoSubmitted) showExamNotice(`Submitted successfully. ${statusLabel}`);
       return { questionId: question.id, statusLabel };
     } catch (err) {
       console.error('[Frontend] Submission error:', err);
@@ -1743,7 +1899,7 @@ export default function CNLabWorkspace() {
         running: false,
         logs: [...prev.logs, err.message || 'Submission failed.'],
       }));
-      if (!autoSubmitted) alert(err.response?.data?.error || 'Failed to submit.');
+      if (!autoSubmitted) showExamNotice(err.response?.data?.error || 'Failed to submit.');
       return null;
     } finally {
       setIsSubmitting(false);
@@ -1896,6 +2052,8 @@ export default function CNLabWorkspace() {
     return (
       <div className="flex flex-col h-screen bg-gray-50">
         <StudentConnectionHeartbeat />
+        <ExamNotice message={examNotice} />
+        <ExamLockOverlay show={isExam && examAccessLocked} onResume={resumeExamFullscreen} resuming={resumingExam} />
         <EvaluationOverlay
           overlay={evaluationOverlay}
           logBoxRef={logBoxRef}
@@ -1913,9 +2071,9 @@ export default function CNLabWorkspace() {
         <Header
           title={question ? question.title : 'No questions available'}
           onTimeUp={handleTimeUp}
-          timeLimit={isFreeCoding || !attemptInfo ? null : remainingSeconds}
-          totalTimeLimit={isFreeCoding ? null : totalSeconds}
-          endsAt={isFreeCoding ? null : attemptEndsAt}
+          timeLimit={isFreeCoding || isPractice || !attemptInfo ? null : remainingSeconds}
+          totalTimeLimit={isFreeCoding || isPractice ? null : totalSeconds}
+          endsAt={isFreeCoding || isPractice ? null : attemptEndsAt}
           serverTime={attemptServerTime}
           onExitLab={() => handleExitWorkspace()}
           studentId={getCurrentUser()}
@@ -1941,6 +2099,10 @@ export default function CNLabWorkspace() {
               evalMessage={evalMessage}
               submissionRefreshTrigger={submissionRefreshTrigger}
               sessionId={getCurrentLabSession()}
+              showResources={!isExam && !isFreeCoding}
+              isPractice={isPractice}
+              isExam={isExam}
+              isFreeCoding={isFreeCoding}
             />
           )}
           {activeTab === 'editor' && (
@@ -1954,14 +2116,19 @@ export default function CNLabWorkspace() {
               updateCode={updateCode}
               addNewFile={addNewFile}
               onRun={handleRun}
+              onEvaluate={handleEvaluate}
               onSubmit={handleSubmit}
+              isPractice={isPractice}
+              isExam={isExam}
               onStopAll={handleStopAll}
               isRunning={isRunning}
+              isEvaluating={isEvaluating}
               isSubmitting={isSubmitting}
               saveStatus={saveStatus}
               renameFile={renameFile}
               updateFileLanguage={updateFileLanguage}
               resetFileToBoilerplate={resetFileToBoilerplate}
+              isFreeCoding={isFreeCoding}
               alreadyPassed={question && passedQuestionIds.has(question.id)}
               onSave={saveActiveFile}
             />
@@ -1983,6 +2150,8 @@ export default function CNLabWorkspace() {
   return (
     <div className="flex flex-col h-screen bg-white">
       <StudentConnectionHeartbeat />
+      <ExamNotice message={examNotice} />
+      <ExamLockOverlay show={isExam && examAccessLocked} onResume={resumeExamFullscreen} resuming={resumingExam} />
       <EvaluationOverlay
         overlay={evaluationOverlay}
         logBoxRef={logBoxRef}
@@ -2000,9 +2169,9 @@ export default function CNLabWorkspace() {
       <Header
         title={moduleInfo ? moduleInfo.name : (question ? question.title : 'No questions available')}
         onTimeUp={handleTimeUp}
-        timeLimit={isFreeCoding || !attemptInfo ? null : remainingSeconds}
-        totalTimeLimit={isFreeCoding ? null : totalSeconds}
-        endsAt={isFreeCoding ? null : attemptEndsAt}
+        timeLimit={isFreeCoding || isPractice || !attemptInfo ? null : remainingSeconds}
+        totalTimeLimit={isFreeCoding || isPractice ? null : totalSeconds}
+        endsAt={isFreeCoding || isPractice ? null : attemptEndsAt}
         serverTime={attemptServerTime}
         showQuestion={showQuestion}
         onToggleQuestion={() => setShowQuestion(!showQuestion)}
@@ -2057,6 +2226,9 @@ export default function CNLabWorkspace() {
                         evalMessage={evalMessage}
                         submissionRefreshTrigger={submissionRefreshTrigger}
                         sessionId={getCurrentLabSession()}
+                        showResources={!isExam && !isFreeCoding}
+                        isPractice={isPractice}
+                        isFreeCoding={isFreeCoding}
                       />
                     )}
                   </Panel>
@@ -2079,6 +2251,8 @@ export default function CNLabWorkspace() {
                   onRun={handleRun}
                   onEvaluate={handleEvaluate}
                   onSubmit={handleSubmit}
+                  isPractice={isPractice}
+                  isExam={isExam}
                   onStopAll={handleStopAll}
                   isRunning={isRunning}
                   isEvaluating={isEvaluating}

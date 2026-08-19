@@ -75,6 +75,8 @@ const initialModule = {
   startTime: '09:00',
   endTime: '12:00',
   targetBatch: '',
+  deliveryMode: 'session',
+  practiceReleased: false,
 };
 
 export default function TeacherUpload() {
@@ -84,7 +86,7 @@ export default function TeacherUpload() {
   const [isLoading, setIsLoading] = useState(false);
   const [questions, setQuestions] = useState([]);
   const [modules, setModules] = useState([]);
-  const [activeTab, setActiveTab] = useState('upload');
+  const [activeTab, setActiveTab] = useState('manage');
   const [editingQuestionId, setEditingQuestionId] = useState(null);
   const [editingModuleId, setEditingModuleId] = useState(null);
   const [isCreatingModule, setIsCreatingModule] = useState(false);
@@ -94,7 +96,7 @@ export default function TeacherUpload() {
   const [selectedModuleToSend, setSelectedModuleToSend] = useState(null);
   const [sessions, setSessions] = useState([]);
   const [selectedSessionId, setSelectedSessionId] = useState('');
-  const [isLabSession, setIsLabSession] = useState(false); // Toggle for lab session mode
+  const [isLabSession, setIsLabSession] = useState(true); // Always enabled for module management
   const [showBulkUploadModal, setShowBulkUploadModal] = useState(false);
   const [bulkUploadStatus, setBulkUploadStatus] = useState({ total: 0, uploaded: 0, failed: 0 });
   const [isBulkUploading, setIsBulkUploading] = useState(false);
@@ -516,6 +518,8 @@ export default function TeacherUpload() {
         startTime: data.startTime,
         endTime: data.endTime,
         targetBatch: data.targetBatch,
+        deliveryMode: data.deliveryMode,
+        practiceReleased: data.practiceReleased,
         questionSchedule: questionSchedule.map((entry) => ({
           question: entry.questionId,
           availableAt: entry.availableAt,
@@ -566,6 +570,8 @@ export default function TeacherUpload() {
       startTime: module.startTime || '09:00',
       endTime: module.endTime || '12:00',
       targetBatch: module.targetBatch || '',
+      deliveryMode: module.deliveryMode || 'session',
+      practiceReleased: module.practiceReleased || false,
     };
     setModuleDefaults(defaults);
     moduleForm.reset(defaults);
@@ -782,15 +788,10 @@ export default function TeacherUpload() {
             )}
 
             <div className="relative flex bg-gray-100">
-              <TabButton active={activeTab === 'upload'} onClick={() => setActiveTab('upload')} curved={true}>
-                {editingQuestionId ? 'Update' : 'Upload New'} Question
-              </TabButton>
-              <TabButton active={activeTab === 'manage'} onClick={() => setActiveTab('manage')} curved={true}>
-                Manage Questions
-              </TabButton>
-              <TabButton active={activeTab === 'modules'} onClick={() => setActiveTab('modules')} curved={true}>
-                Manage Modules
-              </TabButton>
+              {searchParams.get('tab') === 'modules' ? <TabButton active={true} onClick={() => setActiveTab('modules')} curved={true}>Manage Modules</TabButton> : <>
+                <TabButton active={activeTab === 'upload'} onClick={() => setActiveTab('upload')} curved={true}>{editingQuestionId ? 'Update' : 'Upload New'} Question</TabButton>
+                <TabButton active={activeTab === 'manage'} onClick={() => setActiveTab('manage')} curved={true}>Manage Questions</TabButton>
+              </>}
               {isCreatingModule && (
                 <TabButton active={true} onClick={() => {}} curved={true}>
                   {editingModuleId ? 'Update' : 'Create New'} Module

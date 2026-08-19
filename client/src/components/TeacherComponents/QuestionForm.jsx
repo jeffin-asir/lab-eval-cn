@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Controller } from 'react-hook-form';
 import axios from 'axios';
+import { API_BASE } from '../../config';
 import { FormSection, FormLabel, ErrorMessage } from '../FormComponents';
 import TiptapEditor from '../TiptapEditor';
 import Editor from "@monaco-editor/react";
@@ -53,6 +54,7 @@ const QuestionForm = ({
   setValue,
 }) => {
   const files = watchedValues.files || [];
+  const resources = watchedValues.resources || [];
   // Which language tab (C/Java) is currently showing in each file's editor —
   // purely local UI state, not part of the saved question.
   const [activeLangByIdx, setActiveLangByIdx] = useState({});
@@ -97,6 +99,35 @@ const QuestionForm = ({
             placeholder="TCP Echo Server"
           />
           {errors.title && <ErrorMessage>{errors.title.message}</ErrorMessage>}
+        </div>
+
+        <div>
+          <FormLabel>Learning resources (shown in sessions and practice, never in exams)</FormLabel>
+          <input
+            type="file"
+            accept="application/pdf,image/*"
+            onChange={async (event) => {
+              const resource = event.target.files?.[0];
+              if (!resource) return;
+              try {
+                const formData = new FormData();
+                formData.append('resource', resource);
+                const { data } = await axios.post(`${API_BASE}/api/questions/upload-resource`, formData);
+                setValue('resources', [...resources, data], { shouldDirty: true });
+              } catch (err) {
+                alert(err.response?.data?.error || 'Could not upload resource.');
+              } finally {
+                event.target.value = '';
+              }
+            }}
+            className="block w-full text-sm border rounded-md p-2"
+          />
+          {resources.length > 0 && <ul className="mt-2 text-sm text-gray-700 space-y-1">
+            {resources.map((resource, index) => <li key={`${resource.url}-${index}`} className="flex gap-2 items-center">
+              <a href={resource.url} target="_blank" rel="noreferrer" className="text-indigo-600 underline">{resource.name}</a>
+              <button type="button" className="text-red-600" onClick={() => setValue('resources', resources.filter((_, i) => i !== index), { shouldDirty: true })}>Remove</button>
+            </li>)}
+          </ul>}
         </div>
 
         <div>

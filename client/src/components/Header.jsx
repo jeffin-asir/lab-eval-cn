@@ -120,8 +120,12 @@ export default function Header({
                     <span className="font-medium">{studentId}</span>
                   </div>
                 )}
-                <span className="mr-2 font-medium">{moduleInfo.time}</span>
-                <span className="font-medium">{moduleInfo.maxMarks || 'N/A'} Marks</span>
+                {moduleInfo.workspaceMode !== 'practice' && moduleInfo.workspaceMode !== 'free' && <>
+                  <span className="mr-2 font-medium">{moduleInfo.time}</span>
+                  <span className="font-medium">{moduleInfo.maxMarks || 'N/A'} Marks</span>
+                </>}
+                {moduleInfo.workspaceMode === 'practice' && <span className="font-medium">Practice</span>}
+                {moduleInfo.workspaceMode === 'free' && <span className="font-medium">Free coding</span>}
               </div>
             )}
             
@@ -145,7 +149,7 @@ export default function Header({
               {!isTeacherPage && studentId && (
                 <div className="text-xs text-gray-400">{studentId}</div>
               )}
-              {moduleInfo.time} · {moduleInfo.maxMarks || 'N/A'} Marks
+              {moduleInfo.workspaceMode === 'practice' ? 'Practice' : moduleInfo.workspaceMode === 'free' ? 'Free coding' : `${moduleInfo.time} · ${moduleInfo.maxMarks || 'N/A'} Marks`}
             </div>
           )}
         </div>

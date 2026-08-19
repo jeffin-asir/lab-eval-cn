@@ -44,8 +44,8 @@ async function ensureTeacherUser() {
   const existing = await User.findOne({ user_id: TEACHER_USER_ID });
   if (existing) {
     let changed = false;
-    if (!['faculty', 'admin'].includes(existing.role)) {
-      existing.role = 'faculty';
+    if (existing.role !== 'admin') {
+      existing.role = 'admin';
       changed = true;
     }
     if (existing.name !== 'Network Lab Teacher') {
@@ -77,7 +77,7 @@ async function ensureTeacherUser() {
     user_id: TEACHER_USER_ID,
     roll_number: TEACHER_USER_ID,
     password: TEACHER_PASSWORD,
-    role: 'faculty',
+    role: 'admin',
     mustChangePassword: false,
   });
 }
@@ -85,11 +85,9 @@ async function ensureTeacherUser() {
 router.post('/teacher-login', async (req, res) => {
   try {
     const { username, password } = req.body;
-    const teacher = await ensureTeacherUser();
-
-    const passwordMatches = password === teacher.password;
-
-    if (username !== TEACHER_USER_ID || !passwordMatches) {
+    await ensureTeacherUser();
+    const teacher = await User.findOne({ user_id: String(username || '').trim(), role: { $in: ['faculty', 'admin'] } });
+    if (!teacher || password !== teacher.password) {
       return res.status(401).json({ error: 'Invalid username or password.' });
     }
 

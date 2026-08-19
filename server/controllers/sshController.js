@@ -21,6 +21,7 @@ import {
 import LabAssignment from '../models/LabAssignment.js';
 import User from '../models/User.js';
 import { getUserFromRequest } from '../middleware/auth.js';
+import { buildRuntimeSessionId } from '../utils/labSession.js';
 
 dotenv.config();
 
@@ -470,7 +471,15 @@ export function initSSHWebSocket(server) {
 
 async function resolveContainerSessionId(userId, requestedSessionId = null) {
   const normalizedRequested = normalizeSessionId(requestedSessionId);
-  if (normalizedRequested) return normalizedRequested;
+  if (normalizedRequested) {
+    const requestedAssignment = await LabAssignment.findOne({
+      status: 'active',
+      slotKey: String(requestedSessionId || ''),
+    }).populate('activeModule', 'deliveryMode').lean();
+    return requestedAssignment?.activeModule
+      ? buildRuntimeSessionId(normalizedRequested, requestedAssignment.activeModule.deliveryMode)
+      : normalizedRequested;
+  }
 
   const student = await User.findOne({ user_id: userId, role: 'student' }).select('batch').lean();
   if (!student) return null;
@@ -490,13 +499,13 @@ async function resolveContainerSessionId(userId, requestedSessionId = null) {
         ],
       },
     ],
-  }).lean();
+  }).populate('activeModule', 'deliveryMode').lean();
 
   if (!assignment) return null;
   if (assignment.endsAt && new Date(assignment.endsAt) <= new Date()) return null;
   if (assignment.targetBatch && assignment.targetBatch !== student.batch) return null;
 
-  return normalizeSessionId(assignment.slotKey);
+  return buildRuntimeSessionId(assignment.slotKey, assignment.activeModule?.deliveryMode);
 }
 
 export async function ensureSessionContainer(userId, requestedSessionId = null) {
@@ -1000,7 +1009,10 @@ export async function runAndEvaluate({
     const runDoc = await EvaluationRun.create({
       userId,
       studentName,
-      sessionId,
+      // Store the resolved runtime identity. This keeps results aligned with
+      // the container actually used, including the `_session` / `_exam`
+      // separation for a shared module slot.
+      sessionId: activeSession.sessionId,
       moduleId,
       questionId,
       questionKey,

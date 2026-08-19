@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import TagAssignmentModal from './TagAssignmentModel';
 import EditorTabs from './EditorTabs';
 import RunButtons from './RunButtons';
@@ -20,9 +20,12 @@ import {
 // throws before Monaco can use its normal legacy-copy fallback. Supplying a
 // small standalone clipboard service keeps copy/paste functional where the
 // Clipboard API is available and degrades safely to execCommand elsewhere.
+// In exam mode its clipboard stays in page memory and never reads or writes
+// the operating-system clipboard.
 const clipboardService = (() => {
   let text = '';
   let findText = '';
+  let examMode = false;
 
   const legacyCopy = (value) => {
     const textarea = document.createElement('textarea');
@@ -42,6 +45,8 @@ const clipboardService = (() => {
     async writeText(value, type) {
       if (type) return;
       text = value;
+      // In an exam this value is intentionally retained only in page memory.
+      if (examMode) return;
       try {
         if (navigator.clipboard?.writeText) {
           await navigator.clipboard.writeText(value);
@@ -54,6 +59,7 @@ const clipboardService = (() => {
     },
     async readText(type) {
       if (type) return '';
+      if (examMode) return text;
       try {
         if (navigator.clipboard?.readText) return await navigator.clipboard.readText();
       } catch {
@@ -64,7 +70,13 @@ const clipboardService = (() => {
     async writeFindText(value) { findText = value; },
     async readFindText() { return findText; },
     async readResources() { return []; },
-    clearInternalState() {},
+    setExamMode(enabled) {
+      if (enabled && !examMode) text = '';
+      examMode = enabled;
+    },
+    setInternalText(value) { text = value || ''; },
+    getInternalText() { return text; },
+    clearInternalState() { text = ''; },
   };
 })();
 
@@ -100,6 +112,8 @@ export default function EditorPane({
   tagToFileMap,
   setTagToFileMap,
   isFreeCoding,
+  isPractice,
+  isExam = false,
   alreadyPassed,
   onSave,
 }) {
@@ -107,6 +121,11 @@ export default function EditorPane({
   const [theme, setTheme] = useState('vs-dark');
   const [showTagModal, setShowTagModal] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+
+  useEffect(() => {
+    clipboardService.setExamMode(isExam);
+    return () => clipboardService.setExamMode(false);
+  }, [isExam]);
 
   // const activeFile = files.find(f => f.id === activeFileId) || files[0];
 
@@ -299,6 +318,30 @@ export default function EditorPane({
               editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
                 onSave?.();
               });
+              if (isExam) {
+                editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyC, () => {
+                  const selection = editor.getSelection();
+                  const model = editor.getModel();
+                  if (selection && model) clipboardService.setInternalText(model.getValueInRange(selection));
+                });
+                editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyX, () => {
+                  const selection = editor.getSelection();
+                  const model = editor.getModel();
+                  if (!selection || !model || selection.isEmpty()) return;
+                  clipboardService.setInternalText(model.getValueInRange(selection));
+                  editor.executeEdits('exam-private-cut', [{ range: selection, text: '', forceMoveMarkers: true }]);
+                });
+                editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyV, () => {
+                  const selection = editor.getSelection();
+                  const model = editor.getModel();
+                  if (!selection || !model) return;
+                  editor.executeEdits('exam-private-paste', [{
+                    range: selection,
+                    text: clipboardService.getInternalText(),
+                    forceMoveMarkers: true,
+                  }]);
+                });
+              }
             }}
           />
         ) : (
@@ -328,6 +371,7 @@ export default function EditorPane({
         onEvaluate={onEvaluate}
         isEvaluating={isEvaluating}
         isFreeCoding={isFreeCoding}
+        isPractice={isPractice}
         alreadyPassed={alreadyPassed}
       />
 

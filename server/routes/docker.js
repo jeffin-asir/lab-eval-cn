@@ -3,7 +3,7 @@ import { docker } from '../docker/dockerManager.js';
 import { authorize, requireAuth } from '../middleware/auth.js';
 
 const router = express.Router();
-router.use(requireAuth, authorize('faculty', 'admin'));
+router.use(requireAuth, authorize('admin'));
 
 const LEGACY_CONTAINER_PREFIX = 'lab_exam_';
 const LEGACY_VOLUME_PREFIX = 'lab_data_';

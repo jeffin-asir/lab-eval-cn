@@ -49,6 +49,11 @@ const baseQuestionSchema = new mongoose.Schema(
     createdBy: { type: mongoose.Types.ObjectId, ref: "User" },
     creatorId: { type: String },
     details: { type: Object, default: {} },
+    resources: [{
+      name: { type: String, required: true },
+      url: { type: String, required: true },
+      mimeType: { type: String, default: '' },
+    }],
   },
   { timestamps: true, discriminatorKey: "moduleType" }
 );

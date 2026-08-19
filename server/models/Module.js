@@ -30,6 +30,10 @@ const ModuleSchema = new mongoose.Schema(
       default: ""
     }, // Legacy FN/AN — prefer startTime/endTime
     moduleType: { type: String, required: true },
+    // A live module can be a supported learning session or a locked-down exam.
+    deliveryMode: { type: String, enum: ["session", "exam"], default: "session" },
+    // Once released, completed/past modules become available in Practice.
+    practiceReleased: { type: Boolean, default: false },
     metadata: { type: Object, default: {} }, // For compatibility with Test.metadata
     envSettings: {
       allowTabSwitch: { type: Boolean, default: false },

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import Header from '../components/Header';
 import { API_BASE } from '../config';
+import PasswordInput from '../components/PasswordInput';
 
 export default function TeacherBatches() {
   const navigate = useNavigate();
@@ -17,6 +18,7 @@ export default function TeacherBatches() {
   const [loading, setLoading] = useState(false);
   const [selectedBatch, setSelectedBatch] = useState('');
   const [studentSearch, setStudentSearch] = useState('');
+  const [isAdmin, setIsAdmin] = useState(false);
 
   const passwordPlaceholder = form.name.trim()
     ? `${form.name.trim().toLowerCase()}batch`
@@ -26,6 +28,7 @@ export default function TeacherBatches() {
     axios.get(`${API_BASE}/api/auth/me`, { params: { role: 'teacher' } })
       .then((res) => {
         if (!['faculty', 'admin'].includes(res.data.user.role)) navigate('/teacher-login');
+        else setIsAdmin(res.data.user.role === 'admin');
       })
       .catch((err) => { if (err.response?.status === 401) navigate('/teacher-login'); });
   }, [navigate]);
@@ -66,6 +69,17 @@ export default function TeacherBatches() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const createEmptyBatch = async () => {
+    const name = window.prompt('New batch name');
+    if (!name?.trim()) return;
+    try {
+      const response = await axios.post(`${API_BASE}/api/batches/create-empty`, { name });
+      setForm((previous) => ({ ...previous, name: response.data.batch.name }));
+      setMessage(`Batch ${response.data.batch.name} created. Add its default password and students below.`);
+      await loadData();
+    } catch (err) { setMessage(err.response?.data?.error || 'Could not create batch.'); }
   };
 
   const updateRequest = async (id, status) => {
@@ -155,20 +169,18 @@ export default function TeacherBatches() {
       <div className="container mx-auto py-8 px-4">
         <div className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
           <form onSubmit={createBatch} className="lg:col-span-1 bg-white border border-gray-200 rounded-lg p-5 shadow-sm space-y-4">
-            <h2 className="text-base font-semibold text-gray-900">Create / Update Batch</h2>
+            <h2 className="text-base font-semibold text-gray-900">Add Students to Batch</h2>
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Batch</label>
-              <input
+              <label className="flex items-center gap-2 text-xs font-medium text-gray-500 mb-1">Batch {isAdmin && <button type="button" onClick={createEmptyBatch} className="rounded-full bg-indigo-600 px-2 py-0.5 text-white" title="Create new batch">+</button>}</label>
+              <select
                 value={form.name}
                 onChange={(e) => setForm({ ...form, name: e.target.value })}
-                placeholder="N, P, Q"
                 className="w-full border rounded-md px-3 py-2 text-sm"
-              />
+              ><option value="">Select a batch</option>{batches.map((batch) => <option key={batch._id} value={batch.name}>{batch.name}</option>)}</select>
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-500 mb-1">Default Password</label>
-              <input
-                type="password"
+              <PasswordInput
                 value={form.defaultPassword}
                 onChange={(e) => setForm({ ...form, defaultPassword: e.target.value })}
                 placeholder={passwordPlaceholder}
@@ -303,8 +315,7 @@ export default function TeacherBatches() {
                               />
                             </td>
                             <td className="px-3 py-2">
-                              <input
-                                type="password"
+                              <PasswordInput
                                 value={studentDraft.password}
                                 onChange={(e) => setStudentDraft({ ...studentDraft, password: e.target.value })}
                                 placeholder="New password"

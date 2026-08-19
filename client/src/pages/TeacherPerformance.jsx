@@ -228,7 +228,7 @@ export default function TeacherPerformance() {
                   disabled={!selectedDate || !sessionsForDate.length}
                 >
                   <option value="">{!selectedDate ? 'Choose a date first' : sessionsForDate.length ? 'Select lab/module' : 'No lab sessions on this date'}</option>
-                  {sessionsForDate.map((session) => <option key={session.id} value={session.id}>{session.moduleName}{session.startTime && session.endTime ? ` · ${session.startTime} – ${session.endTime}` : ''}</option>)}
+                  {sessionsForDate.map((session) => <option key={session.id} value={session.id}>{session.moduleName} · {session.deliveryMode === 'exam' ? 'Lab exam' : 'Lab session'}{session.startTime && session.endTime ? ` · ${session.startTime} – ${session.endTime}` : ''}</option>)}
                 </select>
                 {selectedSession && needsBatchChoice && <div className="mt-4"><label className="block text-xs font-medium text-gray-500 mb-1">Class / Batch</label><select value={selectedBatch} onChange={(e) => setSelectedBatch(e.target.value)} className="w-full border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"><option value="">Select batch</option>{selectedSession.batches.map((batch) => <option key={batch} value={batch}>{batch}</option>)}</select></div>}
                 {selectedSession && !needsBatchChoice && <p className="mt-4 rounded-md bg-gray-50 px-3 py-2 text-sm text-gray-600">Batch: <b>{selectedSession.batches[0] || 'No enrolled batch'}</b></p>}

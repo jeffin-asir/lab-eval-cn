@@ -11,6 +11,7 @@ import { protect, authorize } from '../middleware/auth.js';
 import { requireAuth } from '../middleware/auth.js';
 import { ensureSessionContainer, stopSessionContainer } from '../controllers/sshController.js';
 import {
+  buildRuntimeSessionId,
   buildQuestionSchedule,
   isQuestionAvailable,
 } from '../utils/labSession.js';
@@ -58,7 +59,7 @@ async function getStudentUpcomingAssignments(student, now = new Date()) {
       },
     ],
   })
-    .populate('activeModule', 'name startTime endTime date')
+    .populate('activeModule', 'name startTime endTime date deliveryMode')
     .sort({ startsAt: 1 })
     .lean();
 
@@ -127,9 +128,23 @@ router.post('/init', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Only students can start lab sessions' });
     }
 
-    const requestedSessionId = req.body?.mode === 'free'
+    let requestedSessionId = req.body?.mode === 'free'
       ? 'FREE_CODING'
-      : req.body?.sessionId || req.body?.slotKey || null;
+      : req.body?.mode === 'practice' && req.body?.moduleId
+        ? `PRACTICE_${req.body.moduleId}`
+        : req.body?.sessionId || req.body?.slotKey || null;
+
+    // Do not let a session and exam that share a module/slot reuse the same
+    // student container. Resolve mode from the active assignment server-side.
+    if (req.body?.mode !== 'free' && req.body?.mode !== 'practice' && requestedSessionId) {
+      const assignment = await LabAssignment.findOne({
+        status: 'active',
+        slotKey: req.body?.slotKey || req.body?.sessionId || '',
+      }).populate('activeModule', 'deliveryMode').lean();
+      if (assignment?.activeModule) {
+        requestedSessionId = buildRuntimeSessionId(requestedSessionId, assignment.activeModule.deliveryMode);
+      }
+    }
     const { sessionId, containerName, sshPort } = await ensureSessionContainer(userId, requestedSessionId);
 
     // Persist the student's display name against the session record.
@@ -185,28 +200,40 @@ router.get('/student-dashboard', requireAuth, async (req, res) => {
     const visibleAssignments = await getStudentVisibleAssignments(student, now);
     const upcomingAssignments = await getStudentUpcomingAssignments(student, now);
 
-    const runs = await EvaluationRun.aggregate([
-      { $match: { userId: student.user_id, runType: 'submit' } },
-      {
-        $group: {
-          _id: { moduleId: '$moduleId', sessionId: '$sessionId', slotKey: '$slotKey' },
-          lastSubmittedAt: { $max: '$createdAt' },
-          questionCount: { $addToSet: '$questionId' },
-        },
-      },
-      { $sort: { lastSubmittedAt: -1 } },
-      { $limit: 20 },
-    ]);
+    // Keep the latest submission per question so the dashboard can show a
+    // useful outcome summary instead of an ever-growing raw event list.
+    const submittedRuns = await EvaluationRun.find({ userId: student.user_id, runType: 'submit' })
+      .select('moduleId sessionId slotKey questionId questionKey communicationResults createdAt')
+      .sort({ createdAt: -1 })
+      .limit(500)
+      .lean();
+    const testGroups = new Map();
+    for (const run of submittedRuns) {
+      const key = [run.moduleId || '', run.sessionId || '', run.slotKey || ''].join('|');
+      if (!testGroups.has(key)) testGroups.set(key, { moduleId: run.moduleId, sessionId: run.sessionId, slotKey: run.slotKey, lastSubmittedAt: run.createdAt, questions: new Map() });
+      const group = testGroups.get(key);
+      // The query is newest first, therefore this is the latest result for Q.
+      if (!group.questions.has(run.questionId)) group.questions.set(run.questionId, run);
+    }
 
-    const moduleIds = runs.map((r) => r._id.moduleId).filter(Boolean);
-    const modules = await CNModule.find({ _id: { $in: moduleIds } }).select('name targetBatch startTime endTime').lean();
+    const runs = [...testGroups.values()].sort((a, b) => new Date(b.lastSubmittedAt) - new Date(a.lastSubmittedAt));
+    const moduleIds = runs.map((r) => r.moduleId).filter(Boolean);
+    const modules = await CNModule.find({ _id: { $in: moduleIds } }).select('name targetBatch startTime endTime deliveryMode').lean();
     const moduleById = new Map(modules.map((m) => [m._id.toString(), m]));
+    const attempts = await TestAttempt.find({ userId: student.user_id, moduleId: { $in: moduleIds } })
+      .select('moduleId slotKey startedAt endsAt status')
+      .lean();
+    const attemptByModuleAndSlot = new Map(attempts.map((attempt) => [`${attempt.moduleId}|${attempt.slotKey}`, attempt]));
 
     res.json({
       student,
       activeSessions: visibleAssignments.map((assignment) => ({
             assignmentId: assignment._id,
-            module: assignment.activeModule,
+            module: {
+              _id: assignment.activeModule._id,
+              name: assignment.activeModule.name,
+              deliveryMode: assignment.activeModule.deliveryMode || 'session',
+            },
             slotKey: assignment.slotKey,
             assignedAt: assignment.assignedAt,
             startsAt: assignment.startsAt,
@@ -218,7 +245,11 @@ router.get('/student-dashboard', requireAuth, async (req, res) => {
           })),
       upcomingSessions: upcomingAssignments.map((assignment) => ({
         assignmentId: assignment._id,
-        module: assignment.activeModule,
+        module: {
+          _id: assignment.activeModule._id,
+          name: assignment.activeModule.name,
+          deliveryMode: assignment.activeModule.deliveryMode || 'session',
+        },
         slotKey: assignment.slotKey,
         startsAt: assignment.startsAt,
         endsAt: assignment.endsAt,
@@ -226,19 +257,72 @@ router.get('/student-dashboard', requireAuth, async (req, res) => {
         endTime: assignment.endTime || assignment.activeModule?.endTime || '',
         targetBatch: assignment.targetBatch,
       })),
-      previousTests: runs.map((r) => ({
-        moduleId: r._id.moduleId,
-        moduleName: moduleById.get(r._id.moduleId)?.name || 'CN Lab',
-        sessionId: r._id.sessionId,
-        slotKey: r._id.slotKey,
-        questionCount: r.questionCount.length,
-        lastSubmittedAt: r.lastSubmittedAt,
-      })),
+      previousTests: runs.map((r) => {
+        const attempt = attemptByModuleAndSlot.get(`${r.moduleId}|${r.slotKey}`);
+        const questions = [...r.questions.values()].map((run) => {
+          const verdicts = (run.communicationResults || []).flatMap((testcase) => testcase.pairs || []);
+          return {
+            questionId: run.questionId,
+            questionKey: run.questionKey || 'Question',
+            passedCount: verdicts.filter((pair) => pair.verdict === 'correct').length,
+            totalTestCases: verdicts.length,
+            testcases: (run.communicationResults || []).map((testcase, index) => ({
+              name: testcase.testcase || `Test case ${index + 1}`,
+              passedCount: (testcase.pairs || []).filter((pair) => pair.verdict === 'correct').length,
+              totalTestCases: (testcase.pairs || []).length,
+            })),
+            submittedAt: run.createdAt,
+          };
+        });
+        const passedCount = questions.reduce((sum, question) => sum + question.passedCount, 0);
+        const totalTestCases = questions.reduce((sum, question) => sum + question.totalTestCases, 0);
+        return {
+          moduleId: r.moduleId,
+          moduleName: moduleById.get(String(r.moduleId))?.name || 'CN Lab',
+          sessionId: r.sessionId,
+          slotKey: r.slotKey,
+          questionCount: questions.length,
+          questions,
+          passedCount,
+          totalTestCases,
+          lastSubmittedAt: r.lastSubmittedAt,
+          startedAt: attempt?.startedAt || null,
+          usedSeconds: attempt?.startedAt ? Math.max(0, Math.floor((new Date(r.lastSubmittedAt) - new Date(attempt.startedAt)) / 1000)) : null,
+          deliveryMode: moduleById.get(String(r.moduleId))?.deliveryMode || 'session',
+        };
+      }),
     });
   } catch (err) {
     console.error('[sessions] student-dashboard error:', err);
     res.status(500).json({ error: err.message });
   }
+});
+
+// Practice intentionally does not reuse a live assignment or attempt timer.
+// Teachers control visibility per module and batch.
+router.get('/practice', requireAuth, async (req, res) => {
+  try {
+    if (req.user.role !== 'student') return res.status(403).json({ error: 'Only students can view practice modules.' });
+    const student = await User.findOne({ user_id: req.user.user_id, role: 'student' }).lean();
+    const modules = await CNModule.find({
+      practiceReleased: true,
+      $or: [{ targetBatch: { $in: [null, ''] } }, { targetBatch: student?.batch || '' }],
+    }).select('name description targetBatch questions deliveryMode updatedAt').sort({ updatedAt: -1 }).lean();
+    res.json(modules.map((module) => ({ ...module, questionCount: module.questions?.length || 0 })));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.get('/practice/:moduleId', requireAuth, async (req, res) => {
+  try {
+    if (req.user.role !== 'student') return res.status(403).json({ error: 'Only students can practice.' });
+    const student = await User.findOne({ user_id: req.user.user_id, role: 'student' }).lean();
+    const module = await CNModule.findOne({
+      _id: req.params.moduleId, practiceReleased: true,
+      $or: [{ targetBatch: { $in: [null, ''] } }, { targetBatch: student?.batch || '' }],
+    }).populate('questions').lean();
+    if (!module) return res.status(404).json({ error: 'This practice module is not available to you.' });
+    res.json({ ...module, workspaceMode: 'practice', questions: module.questions.map((q) => ({ ...q, isAvailable: true })) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 router.post('/test-attempts/start', requireAuth, async (req, res) => {
@@ -580,6 +664,9 @@ router.get('/:sessionId/current-module', requireAuth, async (req, res) => {
     if (Array.isArray(response.questions)) {
       response.questions = response.questions.map((q) => {
         const obj = typeof q.toObject === 'function' ? q.toObject() : { ...q };
+        // Do not merely hide materials in the exam UI: omit them from the
+        // payload so they cannot be recovered from DevTools/network history.
+        if (response.deliveryMode === 'exam') delete obj.resources;
         const entry = scheduleById.get((obj._id || obj).toString());
         const availableAt = entry?.availableAt || response.startTime || '09:00';
         const availableAtDate = entry?.availableAtDate;
