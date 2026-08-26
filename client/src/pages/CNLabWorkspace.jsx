@@ -1653,7 +1653,10 @@ export default function CNLabWorkspace() {
     try {
       setClosingSession(true);
       intentionalExamExitRef.current = true;
-      if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+      if (document.fullscreenElement || document.webkitFullscreenElement) {
+        const exitFullscreen = document.exitFullscreen || document.webkitExitFullscreen;
+        if (exitFullscreen) await exitFullscreen.call(document).catch(() => {});
+      }
       // Instruct terminals to stop and avoid reconnecting
       window.dispatchEvent(new CustomEvent('close-session'));
       window.dispatchEvent(new CustomEvent('stop-all-processes'));
@@ -1663,13 +1666,14 @@ export default function CNLabWorkspace() {
         const closeRes = await axios.post(`${API_BASE}/api/sessions/close`, { sessionId });
         console.log('Closed lab session:', closeRes.data);
         if (closeRes.data?.stopped === false) {
-          alert(`Lab container was not stopped: ${closeRes.data.reason || 'unknown reason'}`);
+          console.warn(`Lab container was not stopped: ${closeRes.data.reason || 'unknown reason'}`);
         }
       }
-      navigate('/student-dashboard');
+      window.__labSessionId = '';
+      navigate('/student-dashboard', { replace: true });
     } catch (err) {
       console.error('Failed to close lab session:', err);
-      alert(err.response?.data?.error || 'Failed to stop the lab container. Please try Exit Lab again.');
+      showExamNotice(err.response?.data?.error || 'Failed to stop the lab container. Please try Exit Lab again.');
       setClosingSession(false);
     }
   };
@@ -2037,7 +2041,7 @@ export default function CNLabWorkspace() {
     }
   }, []);
 
-  if (!authReady || loadingQuestions || !moduleInfo || !questions.length || closingSession) {
+  if (!authReady || loadingQuestions || !moduleInfo || !questions.length) {
     return (
       <WorkspaceLoading
         message={closingSession ? 'Closing your lab container...' : 'Preparing your lab workspace...'}

@@ -304,6 +304,10 @@ router.get('/practice', requireAuth, async (req, res) => {
   try {
     if (req.user.role !== 'student') return res.status(403).json({ error: 'Only students can view practice modules.' });
     const student = await User.findOne({ user_id: req.user.user_id, role: 'student' }).lean();
+    // Practice is intentionally unavailable whenever this student has a live
+    // lab session or exam, matching the Free Coding availability rule.
+    const liveAssignments = await getStudentVisibleAssignments(student);
+    if (liveAssignments.length) return res.json([]);
     const modules = await CNModule.find({
       practiceReleased: true,
       $or: [{ targetBatch: { $in: [null, ''] } }, { targetBatch: student?.batch || '' }],
@@ -316,6 +320,9 @@ router.get('/practice/:moduleId', requireAuth, async (req, res) => {
   try {
     if (req.user.role !== 'student') return res.status(403).json({ error: 'Only students can practice.' });
     const student = await User.findOne({ user_id: req.user.user_id, role: 'student' }).lean();
+    if ((await getStudentVisibleAssignments(student)).length) {
+      return res.status(403).json({ error: 'Practice is unavailable while a live lab session or exam is active.' });
+    }
     const module = await CNModule.findOne({
       _id: req.params.moduleId, practiceReleased: true,
       $or: [{ targetBatch: { $in: [null, ''] } }, { targetBatch: student?.batch || '' }],

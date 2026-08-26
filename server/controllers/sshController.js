@@ -275,6 +275,7 @@ function attachWsToSession(ws, session) {
 async function startTeacherDockerShell(ws, request) {
   let stream = null;
   let exec = null;
+  let closed = false;
   let pendingResize = null;
   let resolveInitialResize;
   const initialResize = new Promise((resolve) => { resolveInitialResize = resolve; });
@@ -296,7 +297,17 @@ async function startTeacherDockerShell(ws, request) {
       if (type === 'resize') applyResize({ cols, rows });
     } catch (err) { console.error('[Docker shell] invalid websocket message:', err.message); }
   });
-  ws.on('close', () => { try { stream?.end(); } catch (_) {} });
+  const closeShell = () => {
+    if (closed) return;
+    closed = true;
+    // End the interactive Bash process as well as its Docker stream. Closing
+    // only the browser WebSocket can otherwise leave a detached bash/TTY in
+    // the container indefinitely.
+    try { stream?.write('exit\n'); } catch (_) {}
+    try { stream?.end(); } catch (_) {}
+    try { stream?.destroy(); } catch (_) {}
+  };
+  ws.on('close', closeShell);
   try {
     const teacher = await getUserFromRequest(request, ['faculty', 'admin']);
     if (!teacher || !['faculty', 'admin'].includes(teacher.role)) throw new Error('Teacher authentication is required.');
@@ -378,6 +389,11 @@ export function initSSHWebSocket(server) {
   });
 
   wss.on('connection', async (ws, request) => {
+    // The heartbeat covers teacher Docker terminals too. Previously these
+    // sockets never received an `isAlive`/pong handler, so they were
+    // terminated as dead after the first heartbeat interval (~25 seconds).
+    ws.isAlive = true;
+    ws.on('pong', () => { ws.isAlive = true; });
     if (ws.mode === 'docker-shell') {
       await startTeacherDockerShell(ws, request);
       return;
@@ -386,10 +402,6 @@ export function initSSHWebSocket(server) {
 
     // Browsers answer WS ping frames with a pong automatically — no
     // client-side change needed for this to work.
-    ws.isAlive = true;
-    ws.on('pong', () => {
-      ws.isAlive = true;
-    });
 
     try {
       const user = await getUserFromRequest(request);
