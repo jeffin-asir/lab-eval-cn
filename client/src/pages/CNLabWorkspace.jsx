@@ -286,6 +286,25 @@ const ExamLockOverlay = ({ show, onResume, resuming }) => {
   );
 };
 
+const ExitLabDialog = ({ show, onCancel, onConfirm, closing }) => {
+  if (!show) return null;
+
+  return (
+    <div className="fixed inset-0 z-[1400] flex items-center justify-center bg-slate-950/70 p-4" role="dialog" aria-modal="true" aria-labelledby="exit-lab-title">
+      <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-2xl">
+        <h2 id="exit-lab-title" className="text-lg font-semibold text-slate-900">Exit lab?</h2>
+        <p className="mt-2 text-sm text-slate-600">Your current lab container will be stopped. You can return to the dashboard after exiting.</p>
+        <div className="mt-5 flex justify-end gap-3">
+          <button type="button" onClick={onCancel} disabled={closing} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 disabled:opacity-60">Cancel</button>
+          <button type="button" onClick={onConfirm} disabled={closing} className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
+            {closing ? 'Exiting…' : 'Exit lab'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const WorkspaceLoading = ({ message = 'Preparing your lab workspace...' }) => (
   <div className="min-h-screen bg-gray-50 flex items-center justify-center">
     <div className="w-full max-w-sm rounded-lg border border-gray-200 bg-white shadow-sm p-6 text-center">
@@ -395,8 +414,10 @@ export default function CNLabWorkspace() {
   });
   const [timeLocked, setTimeLocked] = useState(false);
   const [closingSession, setClosingSession] = useState(false);
+  const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
   const [examNotice, setExamNotice] = useState('');
   const [examAccessLocked, setExamAccessLocked] = useState(false);
+  const [examFullscreenActive, setExamFullscreenActive] = useState(false);
   const [resumingExam, setResumingExam] = useState(false);
   const panelRef = useRef(null);
   const logBoxRef = useRef(null);
@@ -1492,6 +1513,7 @@ export default function CNLabWorkspace() {
   useEffect(() => {
     if (!isExam) {
       setExamAccessLocked(false);
+      setExamFullscreenActive(false);
       return undefined;
     }
     const isMonacoEditorEvent = (event) => {
@@ -1518,8 +1540,10 @@ export default function CNLabWorkspace() {
       showExamNotice('Clipboard shortcuts are disabled during this lab exam.');
     };
     const isFullscreen = () => Boolean(document.fullscreenElement || document.webkitFullscreenElement);
-    const noteFullscreenExit = () => {
-      if (!isFullscreen() && !intentionalExamExitRef.current) setExamAccessLocked(true);
+    const noteFullscreenChange = () => {
+      const fullscreen = isFullscreen();
+      setExamFullscreenActive(fullscreen);
+      if (!fullscreen && !intentionalExamExitRef.current) setExamAccessLocked(true);
     };
     const noteTabReturn = () => {
       if (!document.hidden) setExamAccessLocked(true);
@@ -1528,19 +1552,22 @@ export default function CNLabWorkspace() {
     document.addEventListener('copy', blockClipboardCopy, true);
     document.addEventListener('cut', blockClipboardCopy, true);
     document.addEventListener('keydown', blockClipboardShortcut, true);
-    document.addEventListener('fullscreenchange', noteFullscreenExit);
-    document.addEventListener('webkitfullscreenchange', noteFullscreenExit);
+    document.addEventListener('fullscreenchange', noteFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', noteFullscreenChange);
     document.addEventListener('visibilitychange', noteTabReturn);
     const enterFullscreen = document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen;
     const fullscreenRequest = enterFullscreen?.call(document.documentElement);
-    fullscreenRequest?.catch(() => {});
+    fullscreenRequest?.then(noteFullscreenChange).catch(() => {
+      setExamAccessLocked(true);
+      setExamFullscreenActive(false);
+    });
     return () => {
       document.removeEventListener('paste', blockExternalPaste, true);
       document.removeEventListener('copy', blockClipboardCopy, true);
       document.removeEventListener('cut', blockClipboardCopy, true);
       document.removeEventListener('keydown', blockClipboardShortcut, true);
-      document.removeEventListener('fullscreenchange', noteFullscreenExit);
-      document.removeEventListener('webkitfullscreenchange', noteFullscreenExit);
+      document.removeEventListener('fullscreenchange', noteFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', noteFullscreenChange);
       document.removeEventListener('visibilitychange', noteTabReturn);
       setExamNotice('');
     };
@@ -1551,7 +1578,10 @@ export default function CNLabWorkspace() {
     try {
       const enterFullscreen = document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen;
       await enterFullscreen?.call(document.documentElement);
-      if (document.fullscreenElement || document.webkitFullscreenElement) setExamAccessLocked(false);
+      if (document.fullscreenElement || document.webkitFullscreenElement) {
+        setExamFullscreenActive(true);
+        setExamAccessLocked(false);
+      }
       else setExamNotice('Fullscreen was not granted. Use the browser’s fullscreen permission, then try again.');
     } catch {
       setExamNotice('Fullscreen was not granted. Use the browser’s fullscreen permission, then try again.');
@@ -1646,35 +1676,43 @@ export default function CNLabWorkspace() {
 
   const handleExitWorkspace = async ({ confirmExit = true } = {}) => {
     if (closingSession) return;
-    if (confirmExit && !window.confirm('Exit this lab now? Your current container will be stopped.')) {
+    if (confirmExit) {
+      setExitConfirmOpen(true);
       return;
     }
 
+    setExitConfirmOpen(false);
+    setClosingSession(true);
+    // Mark this before leaving fullscreen so its change event cannot open the
+    // exam lock over the navigation transition.
+    intentionalExamExitRef.current = true;
+    setExamAccessLocked(false);
     try {
-      setClosingSession(true);
-      intentionalExamExitRef.current = true;
       if (document.fullscreenElement || document.webkitFullscreenElement) {
         const exitFullscreen = document.exitFullscreen || document.webkitExitFullscreen;
         if (exitFullscreen) await exitFullscreen.call(document).catch(() => {});
       }
-      // Instruct terminals to stop and avoid reconnecting
       window.dispatchEvent(new CustomEvent('close-session'));
       window.dispatchEvent(new CustomEvent('stop-all-processes'));
       const sessionId = getCurrentLabSession();
       if (sessionId) {
         closeSentRef.current = true;
-        const closeRes = await axios.post(`${API_BASE}/api/sessions/close`, { sessionId });
-        console.log('Closed lab session:', closeRes.data);
-        if (closeRes.data?.stopped === false) {
-          console.warn(`Lab container was not stopped: ${closeRes.data.reason || 'unknown reason'}`);
-        }
+        // Do not make dashboard navigation depend on a possibly slow container
+        // shutdown. The request remains active after this SPA route change.
+        void axios.post(`${API_BASE}/api/sessions/close`, { sessionId })
+          .then((closeRes) => {
+            console.log('Closed lab session:', closeRes.data);
+            if (closeRes.data?.stopped === false) {
+              console.warn(`Lab container was not stopped: ${closeRes.data.reason || 'unknown reason'}`);
+            }
+          })
+          .catch((err) => console.error('Failed to close lab session:', err));
       }
+    } finally {
+      // Container shutdown cannot strand the student on an exited, locked
+      // exam screen.
       window.__labSessionId = '';
       navigate('/student-dashboard', { replace: true });
-    } catch (err) {
-      console.error('Failed to close lab session:', err);
-      showExamNotice(err.response?.data?.error || 'Failed to stop the lab container. Please try Exit Lab again.');
-      setClosingSession(false);
     }
   };
 
@@ -2057,7 +2095,13 @@ export default function CNLabWorkspace() {
       <div className="flex flex-col h-screen bg-gray-50">
         <StudentConnectionHeartbeat />
         <ExamNotice message={examNotice} />
-        <ExamLockOverlay show={isExam && examAccessLocked} onResume={resumeExamFullscreen} resuming={resumingExam} />
+        <ExamLockOverlay show={isExam && (!examFullscreenActive || examAccessLocked)} onResume={resumeExamFullscreen} resuming={resumingExam} />
+        <ExitLabDialog
+          show={exitConfirmOpen}
+          onCancel={() => setExitConfirmOpen(false)}
+          onConfirm={() => handleExitWorkspace({ confirmExit: false })}
+          closing={closingSession}
+        />
         <EvaluationOverlay
           overlay={evaluationOverlay}
           logBoxRef={logBoxRef}
@@ -2155,7 +2199,13 @@ export default function CNLabWorkspace() {
     <div className="flex flex-col h-screen bg-white">
       <StudentConnectionHeartbeat />
       <ExamNotice message={examNotice} />
-      <ExamLockOverlay show={isExam && examAccessLocked} onResume={resumeExamFullscreen} resuming={resumingExam} />
+      <ExamLockOverlay show={isExam && (!examFullscreenActive || examAccessLocked)} onResume={resumeExamFullscreen} resuming={resumingExam} />
+      <ExitLabDialog
+        show={exitConfirmOpen}
+        onCancel={() => setExitConfirmOpen(false)}
+        onConfirm={() => handleExitWorkspace({ confirmExit: false })}
+        closing={closingSession}
+      />
       <EvaluationOverlay
         overlay={evaluationOverlay}
         logBoxRef={logBoxRef}

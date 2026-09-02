@@ -69,8 +69,8 @@ export default function RunButtons({
           )}
         </button>
 
-        {/* Evaluate button — hidden in free-coding mode, nothing to grade against */}
-        {!isFreeCoding && !isPractice && (
+        {/* Evaluate button — hidden only in free-coding mode, which has nothing to grade against */}
+        {!isFreeCoding && (
           <button
             onClick={onEvaluate}
             disabled={isRunning || isEvaluating || isSubmitting}
@@ -87,8 +87,8 @@ export default function RunButtons({
           </button>
         )}
 
-        {/* Submit button — hidden in free-coding mode, nothing to submit against */}
-        {!isFreeCoding && (
+        {/* Practice is evaluation-only; submissions are available in live sessions and exams. */}
+        {!isFreeCoding && !isPractice && (
           <button
             onClick={onSubmit}
             disabled={isRunning || isSubmitting || !activeFile}
