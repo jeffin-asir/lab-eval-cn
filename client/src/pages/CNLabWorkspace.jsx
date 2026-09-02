@@ -271,15 +271,19 @@ const ExamNotice = ({ message }) => message ? (
   </div>
 ) : null;
 
-const ExamLockOverlay = ({ show, onResume, resuming }) => {
+const ExamLockOverlay = ({ show, onResume, resuming, initialEntry }) => {
   if (!show) return null;
   return (
     <div className="fixed inset-0 z-[1300] flex items-center justify-center bg-slate-950/85 p-4">
       <div className="w-full max-w-md rounded-xl border border-slate-600 bg-white p-6 text-center shadow-2xl">
-        <h2 className="text-xl font-semibold text-slate-900">Exam paused</h2>
-        <p className="mt-2 text-sm text-slate-600">Full-screen exam mode was exited or the exam window lost focus. Return to full screen to continue working.</p>
+        <h2 className="text-xl font-semibold text-slate-900">{initialEntry ? 'Ready to begin?' : 'Exam paused'}</h2>
+        <p className="mt-2 text-sm text-slate-600">
+          {initialEntry
+            ? 'Enter full screen to begin this lab exam.'
+            : 'Full-screen exam mode was exited or the exam window lost focus. Return to full screen to continue working.'}
+        </p>
         <button type="button" onClick={onResume} disabled={resuming} className="mt-5 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60">
-          {resuming ? 'Returning…' : 'Return to fullscreen'}
+          {resuming ? 'Opening…' : initialEntry ? 'Enter fullscreen' : 'Return to fullscreen'}
         </button>
       </div>
     </div>
@@ -418,6 +422,7 @@ export default function CNLabWorkspace() {
   const [examNotice, setExamNotice] = useState('');
   const [examAccessLocked, setExamAccessLocked] = useState(false);
   const [examFullscreenActive, setExamFullscreenActive] = useState(false);
+  const [examFullscreenAttempted, setExamFullscreenAttempted] = useState(false);
   const [resumingExam, setResumingExam] = useState(false);
   const panelRef = useRef(null);
   const logBoxRef = useRef(null);
@@ -1514,6 +1519,7 @@ export default function CNLabWorkspace() {
     if (!isExam) {
       setExamAccessLocked(false);
       setExamFullscreenActive(false);
+      setExamFullscreenAttempted(false);
       return undefined;
     }
     const isMonacoEditorEvent = (event) => {
@@ -1543,7 +1549,8 @@ export default function CNLabWorkspace() {
     const noteFullscreenChange = () => {
       const fullscreen = isFullscreen();
       setExamFullscreenActive(fullscreen);
-      if (!fullscreen && !intentionalExamExitRef.current) setExamAccessLocked(true);
+      if (fullscreen) setExamAccessLocked(false);
+      else if (!intentionalExamExitRef.current) setExamAccessLocked(true);
     };
     const noteTabReturn = () => {
       if (!document.hidden) setExamAccessLocked(true);
@@ -1555,12 +1562,10 @@ export default function CNLabWorkspace() {
     document.addEventListener('fullscreenchange', noteFullscreenChange);
     document.addEventListener('webkitfullscreenchange', noteFullscreenChange);
     document.addEventListener('visibilitychange', noteTabReturn);
-    const enterFullscreen = document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen;
-    const fullscreenRequest = enterFullscreen?.call(document.documentElement);
-    fullscreenRequest?.then(noteFullscreenChange).catch(() => {
-      setExamAccessLocked(true);
-      setExamFullscreenActive(false);
-    });
+    // Fullscreen requests must be initiated by a user gesture. Requesting it
+    // here caused Safari to show a black transition and then reject the first
+    // entry attempt. The initial lock overlay provides that explicit action.
+    noteFullscreenChange();
     return () => {
       document.removeEventListener('paste', blockExternalPaste, true);
       document.removeEventListener('copy', blockClipboardCopy, true);
@@ -1575,8 +1580,10 @@ export default function CNLabWorkspace() {
 
   const resumeExamFullscreen = async () => {
     setResumingExam(true);
+    setExamFullscreenAttempted(true);
     try {
       const enterFullscreen = document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen;
+      if (!enterFullscreen) throw new Error('Fullscreen is not supported by this browser.');
       await enterFullscreen?.call(document.documentElement);
       if (document.fullscreenElement || document.webkitFullscreenElement) {
         setExamFullscreenActive(true);
@@ -1584,6 +1591,8 @@ export default function CNLabWorkspace() {
       }
       else setExamNotice('Fullscreen was not granted. Use the browser’s fullscreen permission, then try again.');
     } catch {
+      setExamFullscreenActive(false);
+      setExamAccessLocked(true);
       setExamNotice('Fullscreen was not granted. Use the browser’s fullscreen permission, then try again.');
     } finally {
       setResumingExam(false);
@@ -2095,7 +2104,7 @@ export default function CNLabWorkspace() {
       <div className="flex flex-col h-screen bg-gray-50">
         <StudentConnectionHeartbeat />
         <ExamNotice message={examNotice} />
-        <ExamLockOverlay show={isExam && (!examFullscreenActive || examAccessLocked)} onResume={resumeExamFullscreen} resuming={resumingExam} />
+        <ExamLockOverlay show={isExam && (!examFullscreenActive || examAccessLocked)} onResume={resumeExamFullscreen} resuming={resumingExam} initialEntry={!examFullscreenAttempted} />
         <ExitLabDialog
           show={exitConfirmOpen}
           onCancel={() => setExitConfirmOpen(false)}
@@ -2199,7 +2208,7 @@ export default function CNLabWorkspace() {
     <div className="flex flex-col h-screen bg-white">
       <StudentConnectionHeartbeat />
       <ExamNotice message={examNotice} />
-      <ExamLockOverlay show={isExam && (!examFullscreenActive || examAccessLocked)} onResume={resumeExamFullscreen} resuming={resumingExam} />
+      <ExamLockOverlay show={isExam && (!examFullscreenActive || examAccessLocked)} onResume={resumeExamFullscreen} resuming={resumingExam} initialEntry={!examFullscreenAttempted} />
       <ExitLabDialog
         show={exitConfirmOpen}
         onCancel={() => setExitConfirmOpen(false)}
