@@ -309,6 +309,26 @@ const ExitLabDialog = ({ show, onCancel, onConfirm, closing }) => {
   );
 };
 
+// This deliberately uses page UI instead of window.confirm(). Browser-native
+// dialogs cancel the Fullscreen API, which pauses an exam even for ordinary
+// workspace actions such as Reset Code or Submit.
+const WorkspaceConfirmDialog = ({ dialog, onCancel, onConfirm }) => {
+  if (!dialog.open) return null;
+
+  return (
+    <div className="fixed inset-0 z-[1450] flex items-center justify-center bg-slate-950/70 p-4" role="dialog" aria-modal="true" aria-labelledby="workspace-confirm-title">
+      <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-2xl">
+        <h2 id="workspace-confirm-title" className="text-lg font-semibold text-slate-900">{dialog.title}</h2>
+        <p className="mt-2 whitespace-pre-line text-sm text-slate-600">{dialog.message}</p>
+        <div className="mt-5 flex justify-end gap-3">
+          <button type="button" onClick={onCancel} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700">{dialog.cancelLabel}</button>
+          <button type="button" onClick={onConfirm} className={`rounded-lg px-4 py-2 text-sm font-semibold text-white ${dialog.destructive ? 'bg-red-600' : 'bg-indigo-600'}`}>{dialog.confirmLabel}</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const WorkspaceLoading = ({ message = 'Preparing your lab workspace...' }) => (
   <div className="min-h-screen bg-gray-50 flex items-center justify-center">
     <div className="w-full max-w-sm rounded-lg border border-gray-200 bg-white shadow-sm p-6 text-center">
@@ -419,6 +439,9 @@ export default function CNLabWorkspace() {
   const [timeLocked, setTimeLocked] = useState(false);
   const [closingSession, setClosingSession] = useState(false);
   const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
+  const [workspaceConfirm, setWorkspaceConfirm] = useState({
+    open: false, title: '', message: '', confirmLabel: 'Continue', cancelLabel: 'Cancel', destructive: false,
+  });
   const [examNotice, setExamNotice] = useState('');
   const [examAccessLocked, setExamAccessLocked] = useState(false);
   const [examFullscreenActive, setExamFullscreenActive] = useState(false);
@@ -429,6 +452,7 @@ export default function CNLabWorkspace() {
   const evaluationLogBufferRef = useRef([]);
   const evaluationLogFlushTimerRef = useRef(null);
   const examNoticeTimerRef = useRef(null);
+  const workspaceConfirmResolverRef = useRef(null);
   const dirtyFileIdsRef = useRef(new Set());
   const fileHydrationRequestRef = useRef(0);
 
@@ -442,6 +466,27 @@ export default function CNLabWorkspace() {
   }, []);
 
   useEffect(() => () => window.clearTimeout(examNoticeTimerRef.current), []);
+
+  const requestWorkspaceConfirmation = useCallback((options) => new Promise((resolve) => {
+    workspaceConfirmResolverRef.current = resolve;
+    setWorkspaceConfirm({
+      open: true,
+      title: options.title || 'Please confirm',
+      message: options.message || '',
+      confirmLabel: options.confirmLabel || 'Continue',
+      cancelLabel: options.cancelLabel || 'Cancel',
+      destructive: Boolean(options.destructive),
+    });
+  }), []);
+
+  const resolveWorkspaceConfirmation = useCallback((confirmed) => {
+    const resolve = workspaceConfirmResolverRef.current;
+    workspaceConfirmResolverRef.current = null;
+    setWorkspaceConfirm((previous) => ({ ...previous, open: false }));
+    resolve?.(confirmed);
+  }, []);
+
+  useEffect(() => () => workspaceConfirmResolverRef.current?.(false), []);
 
   // Per-question memory of which files were open (the question's own
   // defaults plus anything the student opened/created beyond them) so that
@@ -985,7 +1030,7 @@ export default function CNLabWorkspace() {
   }, [files, activeFileId]);
 
 
-  const addNewFile = () => {
+  const addNewFile = async () => {
     if (timeLocked || !newFileCreated){
       return;
     }
@@ -995,9 +1040,11 @@ export default function CNLabWorkspace() {
     try{
       const fileName = `${language === 'java' ? 'Main' : 'new_file'}_${fileNo}.${language === 'java' ? 'java' : 'c'}`;
       
-      const confirmCreate = window.confirm(
-        `📁 This new file will be created in:\n\n  ${currentWorkingDir}\n\nFilename: ${fileName}\n\nIf you'd like to save it elsewhere, please change the directory in your terminal first.\n\nContinue?`
-      );
+      const confirmCreate = await requestWorkspaceConfirmation({
+        title: 'Create new file?',
+        message: `This new file will be created in:\n\n${currentWorkingDir}\n\nFilename: ${fileName}\n\nTo save it elsewhere, change directory in the terminal first.`,
+        confirmLabel: 'Create file',
+      });
 
       if (!confirmCreate) return;
       setFileNo(prev => prev + 1);
@@ -1023,7 +1070,7 @@ export default function CNLabWorkspace() {
       setActiveFileId(newId);
     } catch(err){
       console.error("Error creating new file:", err);
-      alert("Failed to create new file.");
+      showExamNotice('Failed to create new file.');
     } finally {
       setTimeout(() => {
         setNewFileCreated(true);
@@ -1042,7 +1089,7 @@ export default function CNLabWorkspace() {
       setShowFileModal(true); // show modal
     } catch (err) {
       console.error("Failed to open file:", err);
-      alert("Could not load file list.");
+      showExamNotice('Could not load file list.');
     }
   };
 
@@ -1053,7 +1100,7 @@ export default function CNLabWorkspace() {
 
     const alreadyOpen = files.some(f => f.name === selected && f.path === `${currentWorkingDir}/${selected}`);
     if (alreadyOpen) {
-      alert(`⚠️ File "${selected}" is already open in the editor.\n\nPlease choose a different file.`);
+      showExamNotice(`File "${selected}" is already open in the editor. Please choose a different file.`);
       return;
     }
 
@@ -1063,7 +1110,7 @@ export default function CNLabWorkspace() {
       });
 
       if (!res.data?.exists) {
-        alert(`File "${selected}" could not be found.`);
+        showExamNotice(`File "${selected}" could not be found.`);
         return;
       }
 
@@ -1082,7 +1129,7 @@ export default function CNLabWorkspace() {
       setActiveFileId(newId);
     } catch (err) {
       console.error("Error loading file content:", err);
-      alert("Failed to load file content.");
+      showExamNotice('Failed to load file content.');
     }
   };
 
@@ -1359,17 +1406,20 @@ export default function CNLabWorkspace() {
     const existingCode = await fetchExistingFileIfPresent(dir, newName);
     if (existingCode === null) return true; // no conflict
 
-    const wantsToOverwrite = window.confirm(
-      `"${newName}" already exists in ${dir || currentWorkingDir}.\n\n` +
-      `Choose OK to overwrite "${newName}" with the contents of "${currentFileName}", ` +
-      `or Cancel to pick a different name instead.`
-    );
+    const wantsToOverwrite = await requestWorkspaceConfirmation({
+      title: 'A file already exists',
+      message: `"${newName}" already exists in ${dir || currentWorkingDir}.\n\nOverwrite it with the contents of "${currentFileName}", or cancel and choose a different name.`,
+      confirmLabel: 'Overwrite',
+      destructive: true,
+    });
     if (!wantsToOverwrite) return false;
 
-    return window.confirm(
-      `This will permanently replace the contents of "${newName}" with "${currentFileName}". ` +
-      `This cannot be undone.\n\nOverwrite "${newName}"?`
-    );
+    return requestWorkspaceConfirmation({
+      title: 'Replace existing file?',
+      message: `This permanently replaces the contents of "${newName}" with "${currentFileName}". This cannot be undone.`,
+      confirmLabel: 'Replace file',
+      destructive: true,
+    });
   };
 
   //handle rename and code language change
@@ -1499,10 +1549,16 @@ export default function CNLabWorkspace() {
     const file = files.find((candidate) => candidate.id === fileId);
     const boilerplate = getFileBoilerplate(file);
     if (!file || typeof boilerplate !== 'string') {
-      alert('No boilerplate is available for this file and language.');
+      showExamNotice('No boilerplate is available for this file and language.');
       return;
     }
-    if (!window.confirm(`Reset ${file.name} to the teacher-provided ${file.language === 'java' ? 'Java' : 'C'} boilerplate? Your current ${file.language} code will be replaced.`)) return;
+    const confirmed = await requestWorkspaceConfirmation({
+      title: 'Reset code?',
+      message: `Reset ${file.name} to the teacher-provided ${file.language === 'java' ? 'Java' : 'C'} boilerplate? Your current ${file.language} code will be replaced.`,
+      confirmLabel: 'Reset code',
+      destructive: true,
+    });
+    if (!confirmed) return;
 
     const resetFile = { ...file, code: boilerplate };
     setFiles((previous) => previous.map((candidate) => candidate.id === fileId ? resetFile : candidate));
@@ -1805,9 +1861,11 @@ export default function CNLabWorkspace() {
     }
     const activeQuestion = questions[activeQuestionIdx];
     if (!isExam && activeQuestion && passedQuestionIds.has(activeQuestion.id)) {
-      const proceed = window.confirm(
-        "You've already passed all test cases for this question. Submit again anyway?"
-      );
+      const proceed = await requestWorkspaceConfirmation({
+        title: 'Submit again?',
+        message: "You've already passed all test cases for this question. Submit again anyway?",
+        confirmLabel: 'Submit again',
+      });
       if (!proceed) return null;
     }
     return submitQuestion(activeQuestion, { autoSubmitted: false, useActiveFiles: true });
@@ -2080,14 +2138,6 @@ export default function CNLabWorkspace() {
     }
   }, []);
 
-  // Request notification permissions on component load
-  useEffect(() => {
-    // Check if browser supports notifications
-    if ("Notification" in window && Notification.permission !== "granted" && Notification.permission !== "denied") {
-      Notification.requestPermission();
-    }
-  }, []);
-
   if (!authReady || loadingQuestions || !moduleInfo || !questions.length) {
     return (
       <WorkspaceLoading
@@ -2111,6 +2161,7 @@ export default function CNLabWorkspace() {
           onConfirm={() => handleExitWorkspace({ confirmExit: false })}
           closing={closingSession}
         />
+        <WorkspaceConfirmDialog dialog={workspaceConfirm} onCancel={() => resolveWorkspaceConfirmation(false)} onConfirm={() => resolveWorkspaceConfirmation(true)} />
         <EvaluationOverlay
           overlay={evaluationOverlay}
           logBoxRef={logBoxRef}
@@ -2215,6 +2266,7 @@ export default function CNLabWorkspace() {
         onConfirm={() => handleExitWorkspace({ confirmExit: false })}
         closing={closingSession}
       />
+      <WorkspaceConfirmDialog dialog={workspaceConfirm} onCancel={() => resolveWorkspaceConfirmation(false)} onConfirm={() => resolveWorkspaceConfirmation(true)} />
       <EvaluationOverlay
         overlay={evaluationOverlay}
         logBoxRef={logBoxRef}
