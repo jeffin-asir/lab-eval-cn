@@ -1,5 +1,4 @@
 import Docker from 'dockerode';
-import getPort from 'get-port';
 import dotenv from 'dotenv';
 import net from 'net';
 import { normalizeSessionId as normalizeLabSessionId } from '../utils/labSession.js';
@@ -44,81 +43,22 @@ function parsePort(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function getPublishedSshPort(containerInfo) {
-  return parsePort(containerInfo.Ports?.find((p) => p.PrivatePort === 22)?.PublicPort);
-}
-
 async function getPublishedSshPortFromInspect(container) {
   const inspect = await container.inspect();
   const binding = inspect.NetworkSettings?.Ports?.['22/tcp']?.[0]?.HostPort;
   return parsePort(binding);
 }
 
-async function resolvePublishedSshPort(container, containerInfo) {
-  const listPort = getPublishedSshPort(containerInfo);
-  if (listPort > 0) return listPort;
-
+async function resolvePublishedSshPort(container) {
   const inspectPort = await getPublishedSshPortFromInspect(container);
   if (inspectPort > 0) return inspectPort;
 
-  throw new Error(`Container ${containerInfo.Names?.[0] || containerInfo.Id} has no published SSH port`);
+  throw new Error(`Container ${container.id || 'unknown'} has no published SSH port`);
 }
 
 async function getContainerState(container) {
   const inspect = await container.inspect();
   return inspect.State?.Running ? 'running' : (inspect.State?.Status || 'unknown');
-}
-
-async function getAllocatedSshPorts() {
-  const containers = await docker.listContainers({ all: true });
-  const ports = new Set();
-
-  const addBindingPorts = (bindingArray) => {
-    if (!Array.isArray(bindingArray)) return;
-    for (const binding of bindingArray) {
-      const hostPort = parsePort(binding?.HostPort);
-      if (hostPort > 0) {
-        ports.add(hostPort);
-      }
-    }
-  };
-
-  for (const containerInfo of containers) {
-    if (Array.isArray(containerInfo.Ports) && containerInfo.Ports.length > 0) {
-      for (const portInfo of containerInfo.Ports) {
-        if (portInfo.PrivatePort === 22 && portInfo.PublicPort) {
-          const hostPort = parsePort(portInfo.PublicPort);
-          if (hostPort > 0) {
-            ports.add(hostPort);
-          }
-        }
-      }
-      continue;
-    }
-
-    try {
-      const container = docker.getContainer(containerInfo.Id);
-      const inspect = await container.inspect();
-      // NetworkSettings.Ports only reflects a *live* binding, so it reads as
-      // empty/null for any stopped container — which is exactly the case we
-      // land in here (containerInfo.Ports was empty). HostConfig.PortBindings
-      // is the port reservation baked in at `docker create` time and persists
-      // regardless of run state, so it's the only reliable source for "is
-      // this port already spoken for" across stopped containers. Using
-      // NetworkSettings here let a stopped container's port silently look
-      // free, so a brand-new container for a different student could be
-      // handed that exact same host port — and when the original student's
-      // (stopped) container later tried to restart on it, Docker refused
-      // because the new container was already bound to it, hard-failing
-      // /api/sessions/init and orphaning the original container.
-      const binding = inspect.HostConfig?.PortBindings?.['22/tcp'];
-      addBindingPorts(binding);
-    } catch (err) {
-      console.warn(`[Dockerode] Failed to inspect container ${containerInfo.Id}: ${err.message}`);
-    }
-  }
-
-  return [...ports];
 }
 
 // Docker's container.start() resolving only means the entrypoint process
@@ -183,13 +123,20 @@ export async function createContainerForUser(userId, requestedSessionId = null) 
 
   return withContainerLock(containerName, async () => {
 
-  // Check if container already exists
-  const existingContainers = await docker.listContainers({ all: true });
-  const existing = existingContainers.find(c => c.Names.includes(`/${containerName}`));
+  // Container names are deterministic (`lab_<userId>_<sessionId>`), so asking
+  // Docker for this one name is both sufficient and O(1). Listing every
+  // historical/stopped container here made every autosave/read scale with the
+  // total number of lab containers on the host.
+  const existingContainer = docker.getContainer(containerName);
+  let existing = null;
+  try {
+    existing = await existingContainer.inspect();
+  } catch (err) {
+    if (err.statusCode !== 404) throw err;
+  }
 
   if (existing) {
-    const existingContainer = docker.getContainer(existing.Id);
-    let containerState = existing.State;
+    let containerState = existing.State?.Running ? 'running' : existing.State?.Status;
 
     if (containerState !== 'running') {
       try {
@@ -218,7 +165,7 @@ export async function createContainerForUser(userId, requestedSessionId = null) 
 
       if (containerState === 'running') {
         await applyContainerAcl(existingContainer, containerName);
-        const sshPort = await resolvePublishedSshPort(existingContainer, existing);
+        const sshPort = await resolvePublishedSshPort(existingContainer);
         const ready = await waitForSshPortReady(sshPort);
         if (!ready) {
           console.warn(`[Dockerode] sshd on ${containerName} (port ${sshPort}) didn't come up within the wait window; proceeding anyway`);
@@ -232,14 +179,15 @@ export async function createContainerForUser(userId, requestedSessionId = null) 
       console.log(`[Dockerode] Reusing running container ${containerName}`);
     }
 
-    const sshPort = await resolvePublishedSshPort(existingContainer, existing);
+    const sshPort = await resolvePublishedSshPort(existingContainer);
     return { containerName, volumeName, sshPort, sessionId };
   }
 
-  // Check and create volume if needed
-  const volumes = await docker.listVolumes();
-  const volumeExists = volumes.Volumes.find(v => v.Name === volumeName);
-  if (!volumeExists) {
+  // As with containers, look up only the deterministically named volume.
+  try {
+    await docker.getVolume(volumeName).inspect();
+  } catch (err) {
+    if (err.statusCode !== 404) throw err;
     await docker.createVolume({ Name: volumeName });
     console.log(`[Dockerode] Created volume ${volumeName}`);
   }
@@ -252,19 +200,6 @@ export async function createContainerForUser(userId, requestedSessionId = null) 
 // Picks a free host port and creates+starts a container bound to it,
 // reusing (never wiping) the given volume so student files survive.
 async function createAndStartContainer(containerName, volumeName) {
-  // Reserve a new random port for SSH.
-  // Sized for a worst case of 300 concurrent students with headroom —
-  // 100 ports was a hard ceiling that made >100 concurrent containers
-  // impossible regardless of hardware.
-  const PORT_RANGE_START = parseInt(process.env.SSH_PORT_RANGE_START || '2200', 10);
-  const PORT_RANGE_SIZE = parseInt(process.env.SSH_PORT_RANGE_SIZE || '500', 10);
-  const candidatePorts = Array.from({ length: PORT_RANGE_SIZE }, (_, i) => PORT_RANGE_START + i);
-  const allocatedPorts = await getAllocatedSshPorts();
-  const sshPort = await getPort({
-    port: candidatePorts,
-    exclude: allocatedPorts,
-  });
-
   // Create the container
   const container = await docker.createContainer({
     Image: SSH_IMAGE,
@@ -276,7 +211,9 @@ async function createAndStartContainer(containerName, volumeName) {
       Privileged: true, // this is what gives write access to /proc/sys
       CapAdd: ['NET_ADMIN', 'NET_RAW', 'SYS_ADMIN'], // Added SYS_ADMIN
       PortBindings: {
-        '22/tcp': [{ HostPort: sshPort.toString() }],
+        // Let Docker atomically allocate an unused host port. The old manual
+        // allocator inspected every stopped container to avoid collisions.
+        '22/tcp': [{ HostPort: '' }],
       },
       Binds: [`${volumeName}:/home/labuser/workdir`],
       AutoRemove: false, // Don't auto-remove to retain state
@@ -297,6 +234,8 @@ async function createAndStartContainer(containerName, volumeName) {
 
   await container.start();
   await applyContainerAcl(container, containerName);
+
+  const sshPort = await resolvePublishedSshPort(container);
 
   const ready = await waitForSshPortReady(sshPort);
   if (!ready) {

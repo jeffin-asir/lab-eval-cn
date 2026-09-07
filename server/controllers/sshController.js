@@ -520,24 +520,43 @@ async function resolveContainerSessionId(userId, requestedSessionId = null) {
   return buildRuntimeSessionId(assignment.slotKey, assignment.activeModule?.deliveryMode);
 }
 
+function getWorkspaceType(sessionId) {
+  if (sessionId === 'FREE_CODING') return 'freecoding';
+  if (sessionId?.startsWith('PRACTICE_')) return 'practice';
+  if (/(?:_|^)exam$/i.test(sessionId || '')) return 'lab_exam';
+  return 'lab_session';
+}
+
 export async function ensureSessionContainer(userId, requestedSessionId = null) {
   const resolvedSessionId = await resolveContainerSessionId(userId, requestedSessionId);
+  // MongoDB is the persistent workspace registry. Docker remains the source
+  // of truth for whether that one workspace is currently runnable, but this
+  // indexed lookup avoids treating Docker's global inventory as a registry.
+  let sessionDoc = await Session.findOne({ userId, sessionId: resolvedSessionId });
   const { containerName, sshPort, sessionId } = await createContainerForUser(userId, resolvedSessionId);
+  const workspaceType = getWorkspaceType(sessionId);
 
-  let sessionDoc = await Session.findOne({ userId, sessionId });
+  // resolveContainerSessionId() and createContainerForUser() normalize the
+  // same value. Keep this fallback for legacy records whose ID was normalized
+  // differently before the current session format existed.
+  if (!sessionDoc && sessionId !== resolvedSessionId) {
+    sessionDoc = await Session.findOne({ userId, sessionId });
+  }
   if (!sessionDoc) {
     await Session.create({
       userId,
       sessionId,
       containerName,
       sshPort,
+      workspaceType,
       createdAt: new Date(),
       activeSockets: [],
     });
     console.log(`[Session DB] Created new session for ${userId} @ ${sessionId}`);
-  } else if ((sessionDoc.containerName !== containerName) || (sessionDoc.sshPort !== sshPort)) {
+  } else if ((sessionDoc.containerName !== containerName) || (sessionDoc.sshPort !== sshPort) || (sessionDoc.workspaceType !== workspaceType)) {
     sessionDoc.containerName = containerName;
     sessionDoc.sshPort = sshPort;
+    sessionDoc.workspaceType = workspaceType;
     await sessionDoc.save();
     console.log(`[Session DB] Updated existing session for ${userId}`);
   }
@@ -581,13 +600,26 @@ export async function stopSessionContainer(userId, requestedSessionId) {
     evictPooledConnection(`networklab:${session.sshPort}`);
   }
 
-  const containers = await docker.listContainers({ all: true });
-  const match = containers.find((info) => {
-    const names = (info.Names || []).map((name) => name.replace(/^\//, ''));
-    return names.includes(containerName) || names.includes(expectedContainerName);
-  });
+  // The stored/deterministic name identifies one workspace; do not enumerate
+  // every historical container just to stop it.
+  let container = docker.getContainer(containerName);
+  let initialInspect = null;
+  try {
+    initialInspect = await container.inspect();
+  } catch (err) {
+    if (err.statusCode !== 404) throw err;
+    // Legacy Session records may contain a pre-normalization name.
+    if (containerName !== expectedContainerName) {
+      container = docker.getContainer(expectedContainerName);
+      try {
+        initialInspect = await container.inspect();
+      } catch (fallbackErr) {
+        if (fallbackErr.statusCode !== 404) throw fallbackErr;
+      }
+    }
+  }
 
-  if (!match) {
+  if (!initialInspect) {
     await Session.updateOne(
       { userId, sessionId },
       { $set: { activeSockets: [] } }
@@ -602,10 +634,8 @@ export async function stopSessionContainer(userId, requestedSessionId) {
     };
   }
 
-  const container = docker.getContainer(match.Id);
   try {
-    const inspect = await container.inspect();
-    if (inspect.State?.Running) {
+    if (initialInspect.State?.Running) {
       await container.stop({ t: 3 });
     }
   } catch (err) {
@@ -633,8 +663,8 @@ export async function stopSessionContainer(userId, requestedSessionId) {
     success: !stillRunning,
     stopped: !stillRunning,
     sessionId,
-    containerName: match.Names?.[0]?.replace(/^\//, '') || containerName,
-    state: finalInspect?.State?.Status || match.State,
+    containerName: initialInspect.Name?.replace(/^\//, '') || containerName,
+    state: finalInspect?.State?.Status || initialInspect.State?.Status,
   };
 }
 

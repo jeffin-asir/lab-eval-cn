@@ -8,11 +8,68 @@ import apiRoutes from './routes/index.js';
 import { initSSHWebSocket } from './controllers/sshController.js';
 import { connectDB, disconnectDB } from './utils/db.js'; 
 import { startSSHPoolReaper } from './utils/sshConnectionPool.js';
+import Session from './models/Session.js';
+import { docker } from './docker/dockerManager.js';
 
 dotenv.config();
 
-// Connect to MongoDB
-connectDB();
+let sessionReconciliationInProgress = false;
+
+async function reconcileStoredSessions(source = 'startup') {
+  if (sessionReconciliationInProgress) {
+    console.log('[session-reconcile] skipped; previous run is still in progress');
+    return;
+  }
+  sessionReconciliationInProgress = true;
+  try {
+    const sessions = await Session.find({}).select('containerName sshPort').lean();
+    let updated = 0;
+    let removed = 0;
+
+    // Reconcile stored records after a restart without starting containers.
+    // Starting every historical workspace here would exhaust the host and undo
+    // the benefit of retaining stopped containers/volumes.
+    const reconcileOne = async (session) => {
+      try {
+        const inspect = await docker.getContainer(session.containerName).inspect();
+        const sshPort = Number.parseInt(inspect.NetworkSettings?.Ports?.['22/tcp']?.[0]?.HostPort
+          || inspect.HostConfig?.PortBindings?.['22/tcp']?.[0]?.HostPort
+          || '0', 10);
+        if (sshPort > 0 && sshPort !== session.sshPort) {
+          await Session.updateOne({ _id: session._id }, { $set: { sshPort } });
+          updated += 1;
+        }
+      } catch (err) {
+        if (err.statusCode === 404) {
+          await Session.deleteOne({ _id: session._id });
+          removed += 1;
+        } else {
+          console.warn(`[session-reconcile:${source}] could not reconcile ${session.containerName}: ${err.message}`);
+        }
+      }
+    };
+
+    // A bounded amount of parallelism prevents a long startup with hundreds of
+    // records without overwhelming Docker with hundreds of inspect requests.
+    const RECONCILE_CONCURRENCY = 10;
+    for (let index = 0; index < sessions.length; index += RECONCILE_CONCURRENCY) {
+      await Promise.all(sessions.slice(index, index + RECONCILE_CONCURRENCY).map(reconcileOne));
+    }
+    console.log(`[session-reconcile:${source}] reconciled ${sessions.length} session records (${updated} updated, ${removed} removed)`);
+  } finally {
+    sessionReconciliationInProgress = false;
+  }
+}
+
+function startSessionReconciliationJob() {
+  const INTERVAL_MS = 30 * 60 * 1000;
+  setInterval(() => {
+    reconcileStoredSessions('scheduled').catch((err) => {
+      console.error('[session-reconcile] scheduled run failed:', err);
+    });
+  }, INTERVAL_MS);
+  console.log('[session-reconcile] scheduled every 30 minutes');
+}
 
 // Node kills the whole process on an unhandled promise rejection by default
 // (and always has for a thrown exception outside any handler). With ~50
@@ -93,7 +150,17 @@ process.on('SIGTERM', async () => {
 
 const PORT = process.env.PORT || 5001;
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running at http://0.0.0.0:${PORT}`);
-  startSSHPoolReaper();
+async function startServer() {
+  await connectDB();
+  await reconcileStoredSessions('startup');
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running at http://0.0.0.0:${PORT}`);
+    startSSHPoolReaper();
+    startSessionReconciliationJob();
+  });
+}
+
+startServer().catch((err) => {
+  console.error('[startup] failed:', err);
+  process.exit(1);
 });

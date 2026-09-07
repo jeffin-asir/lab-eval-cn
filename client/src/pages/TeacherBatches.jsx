@@ -4,6 +4,7 @@ import axios from 'axios';
 import Header from '../components/Header';
 import { API_BASE } from '../config';
 import PasswordInput from '../components/PasswordInput';
+import TeacherAnnouncementPanel from '../components/TeacherAnnouncementPanel';
 
 export default function TeacherBatches() {
   const navigate = useNavigate();
@@ -203,6 +204,7 @@ export default function TeacherBatches() {
           </form>
 
           <div className="lg:col-span-2 space-y-6">
+            <TeacherAnnouncementPanel batches={batches} students={students} onMessage={setMessage} />
             <div className="bg-white border border-amber-200 rounded-lg p-5 shadow-sm">
               <h2 className="text-base font-semibold text-gray-900 mb-1">Session Disconnect Requests</h2>
               <p className="text-xs text-gray-500 mb-3">Approve only after confirming the student needs their previous login ended.</p>

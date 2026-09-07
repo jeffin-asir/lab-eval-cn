@@ -1,6 +1,7 @@
 import express from 'express';
 import { docker } from '../docker/dockerManager.js';
 import { authorize, requireAuth } from '../middleware/auth.js';
+import Session from '../models/Session.js';
 
 const router = express.Router();
 router.use(requireAuth, authorize('admin'));
@@ -55,6 +56,11 @@ function matchesContainerFilter(container, filter = {}) {
   if (filter.kind === 'free-coding') return container.isFreeCoding;
   if (filter.kind === 'session') return container.sessionId === filter.sessionId;
   return true;
+}
+
+async function removeSessionForContainer(containerName) {
+  if (!containerName) return;
+  await Session.deleteOne({ containerName });
 }
 
 async function runContainerCommand(container, command) {
@@ -137,6 +143,7 @@ router.post('/containers/bulk/:action', async (req, res) => {
           if (info.state === 'running') await container.stop({ t: 5 });
         } else {
           await container.remove({ force: true });
+          await removeSessionForContainer(info.name);
         }
         completed.push(info.name);
       } catch (err) { failed.push({ name: info.name, error: err.message }); }
@@ -185,6 +192,7 @@ router.delete('/containers/:id', async (req, res) => {
     const name = String(inspect.Name || '').replace(/^\//, '');
 
     await container.remove({ force: req.query.force === '1' });
+    await removeSessionForContainer(name);
     res.json({ success: true, removed: name || req.params.id });
   } catch (err) {
     console.error('[docker] remove container error:', err);
@@ -204,6 +212,7 @@ router.post('/prune-lab-containers', async (req, res) => {
     for (const info of stoppedLabContainers) {
       const container = docker.getContainer(info.Id);
       await container.remove({ force: true });
+      await removeSessionForContainer(formatContainer(info).name);
       removed.push(formatContainer(info));
     }
 

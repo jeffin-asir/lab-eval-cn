@@ -13,6 +13,7 @@ import authRoute from './auth.js';
 import batchesRoute from './batches.js';
 import dockerRoute from './docker.js';
 import mongoDbRoute from './mongodb.js';
+import announcementsRoute from './announcements.js';
 import { ensureSessionContainer, saveFileToContainer } from '../controllers/sshController.js';
 import { requireAuth } from '../middleware/auth.js';
 
@@ -31,6 +32,7 @@ router.use('/auth', authRoute);
 router.use('/batches', batchesRoute);
 router.use('/docker', dockerRoute);
 router.use('/mongodb', mongoDbRoute);
+router.use('/announcements', announcementsRoute);
 
 async function renameFileInContainer({ userId, oldPath, newPath, sessionId = null }) {
   const { containerName } = await ensureSessionContainer(userId, sessionId);

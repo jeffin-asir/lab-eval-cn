@@ -13,6 +13,7 @@ import TeacherActiveStudents from './pages/TeacherActiveStudents';
 import TeacherManagement from './pages/TeacherManagement';
 import Home from './pages/Home';
 import Login from './pages/Login';
+import StudentAnnouncements from './components/StudentAnnouncements';
 import './App.css';
 
 function App() {
@@ -37,6 +38,7 @@ function App() {
             <Route path="/teacher-active-students" element={<TeacherActiveStudents />} />
             <Route path="/teacher-management" element={<TeacherManagement />} />
           </Routes>
+          <StudentAnnouncements />
         </div>
       </div>
     </Router>
