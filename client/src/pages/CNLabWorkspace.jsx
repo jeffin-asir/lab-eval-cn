@@ -555,6 +555,8 @@ export default function CNLabWorkspace() {
   const [moduleInfo, setModuleInfo] = useState(null);
   const [loadingQuestions, setLoadingQuestions] = useState(true);
   const [moduleError, setModuleError] = useState(null);
+  const isFreeCoding = moduleInfo?._id === 'free_coding';
+  const isPractice = moduleInfo?.workspaceMode === 'practice';
   
   useEffect(() => {
     const fetchModuleData = async () => {
@@ -1342,6 +1344,42 @@ export default function CNLabWorkspace() {
     return res.data;
   };
 
+  // A teacher can reopen the same lab window after it has expired. Poll only
+  // while this workspace is locked so an extension takes effect without the
+  // student refreshing or receiving a new container/session.
+  useEffect(() => {
+    if (!timeLocked || isFreeCoding || isPractice || !moduleInfo?._id) return undefined;
+
+    const checkForExtension = async () => {
+      try {
+        const res = await axios.post(`${API_BASE}/api/sessions/test-attempts/start`, {
+          moduleId: moduleInfo._id,
+          sessionId: getCurrentLabSession(),
+          slotKey: moduleInfo.slotKey || undefined,
+        });
+        setAttemptInfo(res.data);
+        if (res.data.remainingSeconds > 0) {
+          autoSubmitStartedRef.current = false;
+          setTimeLocked(false);
+          setTimeUpDialog({
+            open: false,
+            submitting: false,
+            autoSubmitted: false,
+            alreadySubmitted: false,
+            error: '',
+          });
+          setModuleError(null);
+        }
+      } catch (_) {
+        // The window is still closed; keep the lock until staff extends it.
+      }
+    };
+
+    checkForExtension();
+    const interval = setInterval(checkForExtension, 5000);
+    return () => clearInterval(interval);
+  }, [timeLocked, isFreeCoding, isPractice, moduleInfo?._id, moduleInfo?.slotKey]);
+
   useEffect(() => {
     const handleSaveShortcut = (event) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
@@ -1567,8 +1605,6 @@ export default function CNLabWorkspace() {
   };
 
   const activeFile = files.find(f => f.id === activeFileId) || files[0];
-  const isFreeCoding = moduleInfo?._id === 'free_coding';
-  const isPractice = moduleInfo?.workspaceMode === 'practice';
   const isExam = moduleInfo?.deliveryMode === 'exam' && !isPractice;
 
   useEffect(() => {

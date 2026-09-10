@@ -26,7 +26,7 @@ def print_ascii(hex_string):
 
         if (i <= n-2 and hex_string[i*2:i*2+4] == "0d0a"):
 
-            print("\033[90m\\r\\n\033[0m", end="")
+            print("\033[90m\\r\\n\033[37m", end="")
             print("\r\n", end="")
             i += 2
             continue
@@ -40,9 +40,11 @@ def print_ascii(hex_string):
 
         
         if   (char_byte == '\r'):
-            print("\033[90m\\r\033[0m", end="")
+            print("\033[90m\\r\033[37m", end="")
         elif (char_byte == '\n'):
-            print("\033[90m\\n\033[0m", end="")
+            print("\033[90m\\n\033[37m", end="")
+        elif (char_byte == '\t'):
+            print("\033[90m\\t\033[37m", end="")
 
         i += 1    
         print(char_byte, end="")
@@ -199,11 +201,16 @@ def compare_hex_with_pattern(actual_hex, expected_hex, pattern):
         if p > 0:
             # Must match exactly for this chunk
             if actual_hex[start:end] != expected_hex[start:end]:
+                #diff_print.compare_hex_patterns(expected_hex, actual_hex, pattern)
+                
+                print("\033[31m-");print_ascii(actual_hex[start:end]);print("\033[0m");
+                print("\033[33m+");print_ascii(expected_hex[start:end]);print("\033[0m");
                 return False
 
         # Move past these bytes (read or skipped)
         byte_pos += n
 
+        print("\033[32m⋅");print_ascii(actual_hex[start:end]);print("\033[0m");
     # Trailing bytes are ignored; only pattern-covered region matters
     return True
 
@@ -254,6 +261,10 @@ for idx, item in enumerate(pairs):
         continue
     
     for e_src, e_dst, e_dir, e_data in entries:
+
+        print("\nCHECKING: ")
+        print_ascii(e_data.lower())
+        print("\n")
         if e_dir == direction and e_src == src_logical and e_dst == dst_logical:
             actual = e_data.lower() # here actual represents the data from the hex_transfer.log
             matched = False
@@ -308,9 +319,9 @@ for idx, item in enumerate(pairs):
             else:
                 # For struct/array checks we expect a raw hex literal like "0x68656C6C6F0000000000"
                 if isinstance(expected_data, str) and expected_data.startswith(("0x", "0X")):
-                    #print("obtained :"); print_ascii(actual)
+                    print("obtained :"); print_ascii(actual)
                     expected_hex = expected_data[2:].replace(" ", "").lower()
-                    #print("expected :", end="");print_ascii(expected_hex)
+                    print("expected :", end="");print_ascii(expected_hex)
 
                     
                     matched = compare_hex_with_pattern(actual, expected_hex, pattern)
@@ -319,6 +330,9 @@ for idx, item in enumerate(pairs):
                           f"expected a string like '0x...'")
                     matched = False
 
+
+
+                
             # Mark that we at least saw the packet
             row[2 + 2*idx] = "ok"
             if matched:
@@ -336,18 +350,20 @@ for idx, item in enumerate(pairs):
             if obj in passed_list:
                 continue
             print("\033[33mOBTAINED :\033[0m"); print_ascii(obj)
-            print("")
-            #print("HEX :"); print(obj)
-            print("")
+            if (obj == "" ):
+                print("GOT EMPTY")
+            print("\n")
+            print("HEX :"); print(obj)
             
         print("\033[36mEXPECTED :\033[0m");
         if isinstance(expected_data, str) and expected_data.startswith(("0x", "0X")):
             expected_hex = expected_data[2:].replace(" ", "").lower()
             print_ascii(expected_hex)
-            #print("HEX :");print(expected_hex)
+            print("HEX :");print(expected_hex)
+
         else:
             print(expected_data)
-        print("")
+        print("\n")
 
         print_c(testcase_id+"."+str(pair_count), "wrong")
         obtained_list = []

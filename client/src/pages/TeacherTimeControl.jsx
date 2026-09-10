@@ -10,6 +10,8 @@ export default function TeacherTimeControl() {
   const [slots, setSlots] = useState([]);
   const [batches, setBatches] = useState([]);
   const [activeAssignments, setActiveAssignments] = useState([]);
+  const [selectedAssignmentId, setSelectedAssignmentId] = useState('');
+  const [newEndTime, setNewEndTime] = useState('');
   const [attempts, setAttempts] = useState([]);
   const [form, setForm] = useState({
     moduleId: '',
@@ -38,7 +40,7 @@ export default function TeacherTimeControl() {
       axios.get(`${API_BASE}/api/modules`),
       axios.get(`${API_BASE}/api/performance/slots`),
       axios.get(`${API_BASE}/api/batches`),
-      axios.get(`${API_BASE}/api/modules/active-assignments`),
+      axios.get(`${API_BASE}/api/modules/active-assignments`, { params: { includeEnded: true } }),
     ])
       .then(([moduleRes, slotRes, batchRes, assignmentRes]) => {
         setModules(moduleRes.data || []);
@@ -91,12 +93,35 @@ export default function TeacherTimeControl() {
   };
 
   const selectActiveAssignment = (assignment) => {
+    setSelectedAssignmentId(assignment._id);
+    setNewEndTime(assignment.endTime || '');
     setForm({
       ...form,
       moduleId: assignment.moduleId || '',
       slotKey: assignment.slotKey || '',
       batch: assignment.targetBatch || '',
     });
+  };
+
+  const extendLabWindow = async (e) => {
+    e.preventDefault();
+    setMessage('');
+    if (!selectedAssignmentId || !newEndTime) {
+      setMessage('Choose a lab window and enter its new end time.');
+      return;
+    }
+
+    try {
+      const res = await axios.post(`${API_BASE}/api/modules/assignments/${selectedAssignmentId}/extend`, {
+        endTime: newEndTime,
+      });
+      setMessage(`${res.data.message} ${res.data.updatedAttempts} existing attempt(s) reopened.`);
+      const assignmentRes = await axios.get(`${API_BASE}/api/modules/active-assignments`, { params: { includeEnded: true } });
+      setActiveAssignments(assignmentRes.data || []);
+      await loadAttempts();
+    } catch (err) {
+      setMessage(err.response?.data?.error || 'Failed to extend the lab window.');
+    }
   };
 
   return (
@@ -111,26 +136,47 @@ export default function TeacherTimeControl() {
 
       <div className="container mx-auto py-8 px-4">
         <div className="max-w-5xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <form onSubmit={extendTime} className="bg-white border border-gray-200 rounded-lg p-5 shadow-sm space-y-4">
-            <h2 className="text-base font-semibold text-gray-900">Extension Details</h2>
+          <div className="bg-white border border-gray-200 rounded-lg p-5 shadow-sm space-y-5">
+            <form onSubmit={extendLabWindow} className="space-y-4">
+              <div>
+                <h2 className="text-base font-semibold text-gray-900">Extend Entire Lab Window</h2>
+                <p className="mt-1 text-xs text-gray-500">Reopens a completed lab using the same student containers, so their work is retained.</p>
+              </div>
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Active Module</label>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Lab Window</label>
               <select
-                value=""
+                value={selectedAssignmentId}
                 onChange={(e) => {
                   const assignment = activeAssignments.find((item) => item._id === e.target.value);
                   if (assignment) selectActiveAssignment(assignment);
                 }}
                 className="w-full border rounded-md px-3 py-2 text-sm"
               >
-                <option value="">Choose currently active module</option>
+                <option value="">Choose an active or completed lab</option>
                 {activeAssignments.map((assignment) => (
                   <option key={assignment._id} value={assignment._id}>
-                    {assignment.moduleName} · {assignment.startTime && assignment.endTime ? `${assignment.startTime} – ${assignment.endTime}` : assignment.slotKey} · Batch {assignment.targetBatch || 'All'}
+                    {assignment.moduleName} · {assignment.startTime && assignment.endTime ? `${assignment.startTime} – ${assignment.endTime}` : assignment.slotKey} · Batch {assignment.targetBatch || 'All'} {assignment.status === 'ended' ? '(completed)' : '(active)'}
                   </option>
                 ))}
               </select>
             </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">New End Time</label>
+              <input
+                type="time"
+                value={newEndTime}
+                onChange={(e) => setNewEndTime(e.target.value)}
+                className="w-full border rounded-md px-3 py-2 text-sm"
+              />
+            </div>
+            <button className="w-full py-2 rounded-md bg-indigo-600 text-white text-sm font-medium">
+              Extend Lab for Everyone
+            </button>
+            </form>
+
+            <form onSubmit={extendTime} className="border-t pt-5 space-y-4">
+            <h2 className="text-base font-semibold text-gray-900">Individual Extra Time</h2>
+            <p className="text-xs text-gray-500">Use this only for selected students; it does not reopen the whole lab window.</p>
             <div>
               <label className="block text-xs font-medium text-gray-500 mb-1">Module</label>
               <select
@@ -186,8 +232,9 @@ export default function TeacherTimeControl() {
             <button className="w-full py-2 rounded-md bg-indigo-600 text-white text-sm font-medium">
               Add Time
             </button>
-            {message && <p className="text-sm text-gray-700">{message}</p>}
           </form>
+            {message && <p className="text-sm text-gray-700">{message}</p>}
+          </div>
 
           <div className="lg:col-span-2 bg-white border border-gray-200 rounded-lg p-5 shadow-sm">
             <h2 className="text-base font-semibold text-gray-900 mb-3">Matching Attempts</h2>

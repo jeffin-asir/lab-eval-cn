@@ -2,8 +2,10 @@ import express from 'express';
 import { CNModule } from '../models/Module.js';
 import Course from '../models/Course.js';
 import LabAssignment from '../models/LabAssignment.js';
+import TestAttempt from '../models/TestAttempt.js';
 import {
   parseTimeHHMM,
+  combineDateAndTime,
   resolveModuleTimes,
   buildQuestionSchedule,
   buildSlotKey,
@@ -152,16 +154,28 @@ router.get('/', requireAuth, authorize('faculty', 'admin'), async (req, res) => 
 router.get('/active-assignments', requireAuth, authorize('faculty', 'admin'), async (req, res) => {
   try {
     await expireEndedAssignments();
-    const assignments = await LabAssignment.find({
-      status: 'active',
+    const includeEnded = req.query.includeEnded === 'true';
+    const filter = {
       activeModule: { $ne: null },
-      $or: [{ endsAt: null }, { endsAt: { $gt: new Date() } }],
-    })
-      .populate('activeModule', 'name date startTime endTime targetBatch maxMarks deliveryMode')
+      ...(includeEnded ? {} : {
+        status: 'active',
+        $or: [{ endsAt: null }, { endsAt: { $gt: new Date() } }],
+      }),
+    };
+    const assignments = await LabAssignment.find(filter)
+      .populate('activeModule', 'name date startTime endTime targetBatch maxMarks deliveryMode creatorId')
       .sort({ assignedAt: -1 })
+      .limit(includeEnded ? 100 : 0)
       .lean();
 
-    res.json(assignments.map((assignment) => ({
+    const visibleAssignments = isAdmin(req.user)
+      ? assignments
+      : assignments.filter((assignment) => (
+        assignment.activeModule?.creatorId === req.user.user_id
+        && (!assignment.targetBatch || canAccessBatch(req.user, assignment.targetBatch))
+      ));
+
+    res.json(visibleAssignments.map((assignment) => ({
       _id: assignment._id,
       key: assignment.key,
       moduleId: assignment.activeModule?._id,
@@ -179,6 +193,74 @@ router.get('/active-assignments', requireAuth, authorize('faculty', 'admin'), as
   } catch (err) {
     console.error('Error fetching active assignments:', err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Extend the original assignment rather than assigning the module again.
+// The slotKey is deliberately never changed: it is part of the student's
+// container/volume identity, so retaining it preserves their workspace.
+router.post('/assignments/:assignmentId/extend', requireAuth, authorize('faculty', 'admin'), async (req, res) => {
+  try {
+    const { assignmentId } = req.params;
+    const parsedEndTime = parseTimeHHMM(req.body?.endTime);
+    if (!mongoose.Types.ObjectId.isValid(assignmentId)) {
+      return res.status(400).json({ error: 'Invalid assignment ID.' });
+    }
+    if (!parsedEndTime) {
+      return res.status(400).json({ error: 'Enter the new end time in HH:MM format.' });
+    }
+
+    const assignment = await LabAssignment.findById(assignmentId).populate('activeModule', 'creatorId name');
+    if (!assignment?.activeModule) return res.status(404).json({ error: 'Lab assignment not found.' });
+    if (!isAdmin(req.user) && assignment.activeModule.creatorId !== req.user.user_id) {
+      return res.status(403).json({ error: 'You can only extend modules you created.' });
+    }
+    if (!isAdmin(req.user) && assignment.targetBatch && !canAccessBatch(req.user, assignment.targetBatch)) {
+      return res.status(403).json({ error: 'You cannot extend this batch.' });
+    }
+
+    const baseDate = assignment.startsAt || assignment.endsAt || assignment.assignedAt;
+    if (!baseDate) return res.status(400).json({ error: 'This assignment has no scheduled date.' });
+    const newEndsAt = combineDateAndTime(baseDate, parsedEndTime.display);
+    const previousEndsAt = assignment.endsAt ? new Date(assignment.endsAt) : null;
+    const now = new Date();
+
+    if (previousEndsAt && newEndsAt <= previousEndsAt) {
+      return res.status(400).json({ error: 'The new end time must be later than the current lab end time.' });
+    }
+    if (newEndsAt <= now) {
+      return res.status(400).json({ error: 'The new end time must still be in the future.' });
+    }
+
+    assignment.endTime = parsedEndTime.display;
+    assignment.endsAt = newEndsAt;
+    assignment.status = 'active';
+    await assignment.save();
+
+    // Existing attempts keep their original slot/container. Reset their base
+    // deadline to the extended window and retain any individual extra time.
+    const attempts = await TestAttempt.find({
+      moduleId: assignment.activeModule._id.toString(),
+      slotKey: assignment.slotKey,
+    });
+    for (const attempt of attempts) {
+      attempt.baseEndsAt = newEndsAt;
+      attempt.endsAt = new Date(newEndsAt.getTime() + (Number(attempt.extraMinutes || 0) * 60 * 1000));
+      if (attempt.endsAt > now) attempt.status = 'active';
+      await attempt.save();
+    }
+
+    res.json({
+      success: true,
+      message: `Lab window extended until ${parsedEndTime.display}. Existing workspaces were kept.`,
+      assignmentId: assignment._id,
+      slotKey: assignment.slotKey,
+      endsAt: newEndsAt,
+      updatedAttempts: attempts.length,
+    });
+  } catch (err) {
+    console.error('Error extending lab assignment:', err);
+    res.status(500).json({ error: err.message || 'Failed to extend the lab window.' });
   }
 });
 
