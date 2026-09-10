@@ -111,6 +111,16 @@ export default function TeacherTimeControl() {
       return;
     }
 
+    const selectedAssignment = activeAssignments.find((item) => item._id === selectedAssignmentId);
+    const toMinutes = (time) => {
+      const [hours, minutes] = String(time || '').split(':').map(Number);
+      return Number.isFinite(hours) && Number.isFinite(minutes) ? (hours * 60) + minutes : null;
+    };
+    if (selectedAssignment && toMinutes(newEndTime) <= toMinutes(selectedAssignment.endTime)) {
+      setMessage(`Choose a time after ${selectedAssignment.endTime}. For noon, select 12:15 PM (not 12:15 AM).`);
+      return;
+    }
+
     try {
       const res = await axios.post(`${API_BASE}/api/modules/assignments/${selectedAssignmentId}/extend`, {
         endTime: newEndTime,
@@ -168,6 +178,7 @@ export default function TeacherTimeControl() {
                 onChange={(e) => setNewEndTime(e.target.value)}
                 className="w-full border rounded-md px-3 py-2 text-sm"
               />
+              <p className="mt-1 text-xs text-gray-500">For a noon extension, select 12:15 PM. Do not select 12:15 AM.</p>
             </div>
             <button className="w-full py-2 rounded-md bg-indigo-600 text-white text-sm font-medium">
               Extend Lab for Everyone
